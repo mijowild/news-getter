@@ -6,6 +6,10 @@ Most news comes through feeds ranked by someone else's idea of what should hold 
 
 It runs on your own machine, reads the RSS/Atom feeds of independent outlets and blogs (German and English), and stores everything in a single local SQLite file. When several outlets report the same story, it folds them into one row, so a day of news is a list of stories, not 40 copies of the same headline.
 
+Note: Youtube's feed per channel can be added as well. Just add:
+```https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxxxxxxxxxxxxxxxxxxx```
+Find the channel ID: on the channel page, open the description or "About" and look for "Share channel" --> "Copy channel ID". 
+
 Python 3 standard library only. No dependencies, no build step, one HTML file for the front end.
 
 ## Run
