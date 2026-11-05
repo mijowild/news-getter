@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>News Getter</title>
+<style>
+:root{--bg:#faf9f6;--fg:#1d1d1b;--mut:#76736b;--line:#e4e1d9;--card:#fff;--acc:#2f5d50;--warn:#a4452c}
+@media(prefers-color-scheme:dark){:root{--bg:#161614;--fg:#e8e6df;--mut:#8f8c83;--line:#2b2a27;--card:#1e1e1c;--acc:#7fb5a3;--warn:#e08a70}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+header h1{font-size:17px;margin:0 8px 0 0}
+button,select,input{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+button{cursor:pointer}button.on{background:var(--acc);color:var(--bg);border-color:var(--acc)}
+input[type=search]{flex:1;min-width:120px;max-width:260px}
+main{max-width:860px;margin:0 auto;padding:12px 16px 60px}
+.src{margin:22px 0 6px;display:flex;align-items:baseline;gap:8px}
+.src h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;margin:0;color:var(--acc)}
+.row .n a{color:var(--acc);text-decoration:none}.row .n a:hover{text-decoration:underline}
+main.wide{max-width:1240px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:6px}
+@media(max-width:1000px){.grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:460px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer;min-width:0}
+.card:hover{border-color:var(--acc)}
+.card.quiet{opacity:.55}.card.bad{border-color:var(--warn)}
+.card .top{display:flex;gap:6px;align-items:baseline}
+.card .top b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .lg{font-size:11px;color:var(--mut)}
+.card .pay{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 4px}
+.card .stat{font-size:13px;color:var(--mut);margin-top:2px}
+.card .topics{font-size:13px;color:var(--acc);margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.src small{color:var(--mut)}.err{color:var(--warn)}
+.item{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line)}
+.item a.t{flex:1;color:var(--fg);text-decoration:none;cursor:pointer}
+.item a.t:hover{text-decoration:underline}
+.item.read a.t{color:var(--mut)}
+.item .meta{color:var(--mut);font-size:12px;white-space:nowrap}
+.item .pay{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 4px;line-height:1.4}
+.item .src-tag{color:var(--acc);font-size:12px}
+.item .go{color:var(--mut);text-decoration:none;font-size:13px}
+.more{display:block}
+.item .grp{font-size:12px;color:var(--acc);border:1px solid var(--acc);border-radius:99px;padding:0 8px;cursor:pointer;white-space:nowrap;background:none;line-height:1.5}
+.members{margin-left:14px;border-left:2px solid var(--line);padding-left:10px}
+.members .item:last-child{border-bottom:0}
+#settings{display:none;position:fixed;inset:0;background:var(--bg);z-index:20;overflow:auto}
+#settings.open{display:block}
+#settings .in{max-width:860px;margin:0 auto;padding:16px}
+.row{display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin:4px 0;background:var(--card)}
+.row.drag{opacity:.4}.row .h{cursor:grab;color:var(--mut)}
+.row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row.off .n{opacity:.45}
+.add{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}.add input{flex:1;min-width:140px}
+.detail{margin:2px 0 10px 4px;padding:6px 0 10px 14px;border-left:2px solid var(--acc)}
+.detail .sub{color:var(--mut);font-size:13px;margin:2px 0 8px}
+.detail .art{font-family:Georgia,serif;font-size:16px;line-height:1.6;max-width:68ch}
+.detail .art a{color:var(--acc)}
+.detail .note{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px;color:var(--mut);margin:8px 0}
+.detail .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.detail .acts a{text-decoration:none}
+.item.open a.t{font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.chip{border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:13px;background:var(--card);cursor:pointer}
+.chip.m{border-color:var(--warn);color:var(--warn)}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;z-index:30;display:none;gap:12px;align-items:center;font-size:14px}
+#toast button{background:none;border:0;color:inherit;text-decoration:underline;padding:0}
+.empty{color:var(--mut);padding:40px 0;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>News</h1>
+  <button id="v-ov" class="on">Overview</button>
+  <button id="v-src">By source</button>
+  <button id="v-time">Timeline</button>
+  <select id="lang"><option value="">DE + EN</option><option value="de">Deutsch</option><option value="en">English</option></select>
+  <input id="q" type="search" placeholder="Search headlines">
+  <select id="sort" title="Timeline order"><option value="new">Newest first</option><option value="size">Most covered</option></select>
+  <button id="group" title="Merge headlines about the same story (Timeline)">Group stories</button>
+  <button id="unread" title="Only unread (timeline)">Unread</button>
+  <button id="nopay" title="Hide articles behind a paywall">Hide paywalled</button>
+  <button id="refresh" title="Fetch feeds now">↻</button>
+  <button id="cfg">Sources</button>
+  <button id="enall" title="Re-enable every disabled source">Enable all</button>
+</header>
+<main id="main"></main>
+
+
+<div id="toast"></div>
+
+<div id="settings"><div class="in">
+  <div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0;flex:1">Sources</h2><button id="sclose">Done</button></div>
+  <p style="color:var(--mut);font-size:14px">Drag rows to set the order. Checkbox enables a source. The “paywall” box marks all of a source's articles as paywalled, for feeds that don't flag them individually.</p>
+  <div class="add"><input id="a-name" placeholder="Name"><input id="a-feed" placeholder="Feed URL (https://…)"><select id="a-lang"><option value="de">DE</option><option value="en">EN</option></select><button id="a-btn">Add</button></div>
+  <div class="add"><label>Import OPML <input id="opml" type="file" accept=".opml,.xml"></label> <a href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
+  <h3 style="margin:18px 0 4px">Muted words</h3>
+  <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Hides items whose headline or feed tags contain the word at the start of a word: <code>fußball</code> also hides “Fußballer”, but not “Transport”. Use <code>*sport</code> to match anywhere (“Wintersport”). <span id="mhidden"></span></p>
+  <div class="add"><input id="m-in" placeholder="e.g. fußball, bundesliga, *sport, formel 1"><button id="m-btn">Mute</button></div>
+  <div class="chips" id="mchips"></div>
+  <h3 style="margin:18px 0 4px">Order</h3>
+  <div id="slist"></div>
+</div></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+async function api(p,body,method){
+  const o=body!==undefined?{method:method||'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:(method?{method}:undefined);
+  const r=await fetch('/api'+p,o);if(!r.ok)throw new Error(await r.text());return r.json();
+}
+let view=localStorage.view2||'ov', lang='', unread=false, q='', srcFilter=null;
+let nopay=localStorage.nopay==='1', group=localStorage.group!=='0', sort=localStorage.sort||'new';
+const ago=ts=>{const d=Date.now()/1000-ts;if(d<3600)return Math.max(1,Math.round(d/60))+' min';if(d<86400)return Math.round(d/3600)+' h';if(d<604800)return Math.round(d/86400)+' d';return new Date(ts*1000).toLocaleDateString()};
+
+let openEntry=null;
+function itemRow(it,showSrc){
+  const w=el('div','entry');
+  const r=el('div','item'+(it.read?' read':''));
+  if(showSrc)r.append(el('span','src-tag',it.source));
+  const a=el('a','t',it.title);a.title=it.orig;a.onclick=()=>toggle(it,w,r);r.append(a);
+  if(it.paywalled){const p=el('span','pay','paid');p.title='Behind a paywall';r.append(p)}
+  r.append(el('span','meta',ago(it.published)));
+  const g=el('a','go','↗');g.href=it.url;g.target='_blank';g.rel='noopener noreferrer';g.title='Open at source';r.append(g);
+  w.append(r);
+  return w;
+}
+function collapse(w){if(!w)return;w.querySelector('.detail')?.remove();w.querySelector('.item').classList.remove('open');if(openEntry===w)openEntry=null}
+async function render(){
+  const m=$('#main');m.textContent='';openEntry=null;m.classList.toggle('wide',view==='ov');
+  for(const [id,v] of [['#v-ov','ov'],['#v-src','src'],['#v-time','time']])$(id).classList.toggle('on',view===v);
+  if(view==='ov'){
+    const data=await api('/stats?x=1'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':''));
+    const grid=el('div','grid');
+    for(const s of data){
+      if(q&&!s.name.toLowerCase().includes(q)&&!s.topics.some(t=>t.toLowerCase().includes(q)))continue;
+      const stale=!s.last||Date.now()/1000-s.last>30*86400;
+      const c=el('div','card'+(s.week?'':' quiet')+(s.error?' bad':''));
+      const top=el('div','top');top.append(el('b','',s.name),el('span','lg',s.lang.toUpperCase()));
+      if(s.paywall)top.append(el('span','pay','paid'));
+      c.append(top);
+      c.append(el('div','stat',s.error?'⚠ '+s.error:(s.last?'last '+(stale?new Date(s.last*1000).toLocaleDateString():ago(s.last)+' ago'):'no articles yet')+' · '+s.week+' in 7 d'));
+      c.append(el('div','topics',s.topics.length?s.topics.join(' · '):'\u00a0'));
+      c.onclick=()=>{srcFilter={id:s.id,name:s.name};view='time';localStorage.view2=view;render()};
+      grid.append(c);
+    }
+    m.append(grid);
+    if(!grid.children.length)m.append(el('div','empty','No sources match.'));
+  }else if(view==='src'){
+    const data=await api('/overview?per=8'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':''));
+    let any=false;
+    for(const g of data){
+      const items=g.items.filter(i=>!q||i.title.toLowerCase().includes(q)||i.orig.toLowerCase().includes(q));
+      if(!items.length&&(q||!g.source.error))continue;any=true;
+      const h=el('div','src');h.append(el('h2','',g.source.name));
+      if(g.source.error){const e=el('small','err','⚠ '+g.source.error);h.append(e)}
+      else h.append(el('small','',g.source.note||''));
+      m.append(h);items.forEach(i=>m.append(itemRow(i,false)));
+    }
+    if(!any)m.append(el('div','empty','No items yet — feeds are being fetched. Press ↻ in a moment.'));
+  }else{
+    if(srcFilter){const f=el('div','chips');const x=el('span','chip m','Source: '+srcFilter.name+' ✕');x.onclick=()=>{srcFilter=null;render()};f.append(x);m.append(f)}
+    const PAGE=100;let offset=0;const groups=new Map();
+    const place=it=>{
+      const g=group&&it.cluster?groups.get(it.cluster):null;
+      if(!g){
+        const w=itemRow(it,true);
+        if(group&&it.cluster){const box=el('div','members');box.hidden=true;const badge=el('button','grp');
+          badge.onclick=()=>{box.hidden=!box.hidden;badge.classList.toggle('on',!box.hidden);label()};
+          const info={w,box,badge,srcs:new Set([it.source]),n:1};
+          const label=info.label=()=>{badge.textContent=(box.hidden?'+ ':'− ')+(info.n-1)+' more · '+info.srcs.size+' source'+(info.srcs.size>1?'s':'')};
+          w.querySelector('.item').insertBefore(badge,w.querySelector('.meta'));
+          badge.hidden=true;w.append(box);groups.set(it.cluster,info)}
+        m.insertBefore(w,more.isConnected?more:null);return;
+      }
+      g.box.append(itemRow(it,true));g.n++;g.srcs.add(it.source);g.badge.hidden=false;g.label();
+    };
+    const more=el('button','more','Load more');more.style.margin='16px 0';
+    const load=async()=>{
+      more.disabled=true;more.textContent='Loading…';
+      const bysize=sort==='size';
+      let res=await api('/items?limit='+PAGE+'&offset='+offset+(bysize?'&sort=size':'')+(srcFilter?'&source='+srcFilter.id:'')+(lang?'&lang='+lang:'')+(unread?'&unread=1':'')+(nopay?'&nopay=1':'')+(q?'&q='+encodeURIComponent(q):''));
+      const items=bysize?res.items:res;
+      more.remove();
+      items.forEach(place);
+      offset=bysize?res.next:offset+items.length;
+      if(!items.length&&!m.querySelector('.entry'))m.append(el('div','empty','Nothing here.'));
+      else if(bysize?offset!==null:items.length===PAGE){more.disabled=false;more.textContent='Load more';m.append(more)}
+      else m.append(el('div','empty','End of timeline.'));
+    };
+    more.onclick=load;await load();
+  }
+}
+
+let toastT;
+function toast(msg,undo){
+  const t=$('#toast');t.textContent=msg;t.style.display='flex';
+  if(undo){const b=el('button','','Undo');b.onclick=()=>{t.style.display='none';undo()};t.append(b)}
+  clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',6000);
+}
+async function toggle(it,w,row){
+  if(openEntry===w){collapse(w);return}
+  collapse(openEntry);openEntry=w;
+  row.classList.add('read','open');
+  const b=el('div','detail',null);b.textContent='Loading…';row.after(b);
+  let d;try{d=await api('/item/'+it.id)}catch(e){b.textContent='Could not load this item.';return}
+  if(openEntry!==w)return;
+  b.textContent='';
+  b.append(el('div','sub',d.source+' · '+new Date(d.published*1000).toLocaleString()));
+  if(d.title!==d.orig)b.append(el('div','sub','Original: '+d.orig));
+  if(d.tags&&d.tags.length){const c=el('div','chips');d.tags.forEach(t=>{const x=el('span','chip',t);x.title='Mute this tag';x.onclick=async()=>{await addMute(t);x.classList.add('m');x.textContent=t+' (muted)'};c.append(x)});b.append(c)}
+  const art=el('div','art');art.innerHTML=d.html||'<p><em>No text in feed.</em></p>';b.append(art);
+  const acts=el('div','acts');
+  const open=el('a');open.href=d.url;open.target='_blank';open.rel='noopener noreferrer';open.append(el('button','','Open at source ↗'));
+  const ex=el('button','','Exclude this source');ex.title='Stop showing this source';
+  ex.onclick=async()=>{await api('/sources/'+d.source_id,{enabled:0});openEntry=null;render();
+    toast(d.source+' excluded',async()=>{await api('/sources/'+d.source_id,{enabled:1});render()})};
+  acts.append(open,ex);b.append(acts);
+}
+$('#enall').onclick=async()=>{const d=await api('/sources/enable-all',{});render();toast(d.enabled?d.enabled+' source'+(d.enabled>1?'s':'')+' enabled':'All sources were already enabled')};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){collapse(openEntry);$('#settings').classList.remove('open')}});
+$('#nopay').classList.toggle('on',nopay);
+$('#nopay').onclick=e=>{nopay=!nopay;localStorage.nopay=nopay?'1':'0';e.target.classList.toggle('on',nopay);render()};
+$('#v-ov').onclick=()=>{view='ov';localStorage.view2=view;render()};
+$('#v-src').onclick=()=>{view='src';localStorage.view2=view;render()};
+$('#v-time').onclick=()=>{srcFilter=null;view='time';localStorage.view2=view;render()};
+$('#lang').onchange=e=>{lang=e.target.value;render()};
+$('#sort').value=sort;
+$('#sort').onchange=e=>{sort=e.target.value;localStorage.sort=sort;render()};
+$('#group').classList.toggle('on',group);
+$('#group').onclick=e=>{group=!group;localStorage.group=group?'1':'0';e.target.classList.toggle('on',group);render()};
+$('#unread').onclick=e=>{unread=!unread;e.target.classList.toggle('on',unread);render()};
+let qt;$('#q').oninput=e=>{clearTimeout(qt);qt=setTimeout(()=>{q=e.target.value.trim().toLowerCase();render()},250)};
+$('#refresh').onclick=async()=>{const b=$('#refresh');b.disabled=true;await api('/refresh',{});
+  const t=setInterval(async()=>{const s=await api('/status');if(!s.refreshing){clearInterval(t);b.disabled=false;render()}},1500)};
+
+// ---- settings ----
+let dragId=null;
+async function loadSettings(){
+  const list=await api('/sources');const box=$('#slist');box.textContent='';
+  for(const s of list){
+    const r=el('div','row'+(s.enabled?'':' off'));r.draggable=true;r.dataset.id=s.id;
+    r.append(el('span','h','⠿'));
+    const cb=el('input');cb.type='checkbox';cb.checked=!!s.enabled;cb.onchange=()=>api('/sources/'+s.id,{enabled:cb.checked?1:0}).then(loadSettings);r.append(cb);
+    const nm=el('span','n');const lk=el('a','',s.name+' ↗');lk.href=s.site;lk.target='_blank';lk.rel='noopener noreferrer';lk.title=s.site;lk.draggable=false;
+    nm.append(lk,document.createTextNode('  ·  '+s.lang.toUpperCase()+(s.category?'  ·  '+s.category:'')));r.append(nm);
+    if(s.last_error)r.append(el('span','err',s.last_error));
+    const pw=el('label');pw.title='Treat every article of this source as paywalled (for feeds that do not mark individual articles)';
+    const pc=el('input');pc.type='checkbox';pc.checked=!!s.paywall_mode;pc.onchange=()=>api('/sources/'+s.id,{paywall_mode:pc.checked?1:0});
+    pw.append(pc,document.createTextNode(' paywall'));pw.style.fontSize='13px';pw.style.whiteSpace='nowrap';r.append(pw);
+    const del=el('button','','✕');del.onclick=()=>{if(confirm('Remove '+s.name+'?'))api('/sources/'+s.id,undefined,'DELETE').then(loadSettings)};r.append(del);
+    r.ondragstart=()=>{dragId=s.id;r.classList.add('drag')};
+    r.ondragend=()=>r.classList.remove('drag');
+    r.ondragover=e=>{e.preventDefault();const d=box.querySelector('.drag');if(!d||d===r)return;
+      const after=e.clientY>r.getBoundingClientRect().top+r.offsetHeight/2;box.insertBefore(d,after?r.nextSibling:r)};
+    r.ondrop=e=>{e.preventDefault();api('/sources/reorder',{ids:[...box.children].map(x=>+x.dataset.id)})};
+    box.append(r);
+  }
+}
+async function loadMute(){
+  const d=await api('/mute');const box=$('#mchips');box.textContent='';
+  $('#mhidden').textContent=d.terms.length?`Currently hiding ${d.hidden} stored items.`:'';
+  d.terms.forEach(t=>{const c=el('span','chip m',t+' ✕');c.onclick=async()=>{await api('/mute',{terms:d.terms.filter(x=>x!==t)});loadMute()};box.append(c)});
+}
+async function addMute(raw){
+  const cur=(await api('/mute')).terms;
+  const add=raw.split(',').map(x=>x.trim()).filter(x=>x&&!cur.some(c=>c.toLowerCase()===x.toLowerCase()));
+  await api('/mute',{terms:[...cur,...add]});
+}
+$('#m-btn').onclick=async()=>{await addMute($('#m-in').value);$('#m-in').value='';loadMute()};
+$('#m-in').onkeydown=e=>{if(e.key==='Enter')$('#m-btn').click()};
+$('#cfg').onclick=()=>{$('#settings').classList.add('open');loadSettings();loadMute()};
+$('#sclose').onclick=()=>{$('#settings').classList.remove('open');render()};
+$('#a-btn').onclick=async()=>{const feed=$('#a-feed').value.trim();if(!feed)return;
+  await api('/sources',{name:$('#a-name').value.trim(),feed,lang:$('#a-lang').value});$('#a-name').value=$('#a-feed').value='';loadSettings()};
+$('#opml').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  const r=await fetch('/api/import-opml',{method:'POST',body:await f.text()});const d=await r.json();alert((d.added??0)+' sources added');loadSettings()};
+
+render();
+</script>
+</body>
+</html>
