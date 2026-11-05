@@ -40,6 +40,7 @@ main.wide{max-width:1240px}
 .item .meta{color:var(--mut);font-size:12px;white-space:nowrap}
 .item .pay{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 4px;line-height:1.4}
 .item .src-tag{color:var(--acc);font-size:12px}
+.yt{font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 4px;line-height:1.4;white-space:nowrap}
 .item .go{color:var(--mut);text-decoration:none;font-size:13px}
 .more{display:block}
 .item .grp{font-size:12px;color:var(--acc);border:1px solid var(--acc);border-radius:99px;padding:0 8px;cursor:pointer;white-space:nowrap;background:none;line-height:1.5}
@@ -80,6 +81,7 @@ main.wide{max-width:1240px}
   <select id="sort" title="Timeline order"><option value="new">Newest first</option><option value="size">Most covered</option></select>
   <button id="group" title="Merge headlines about the same story (Timeline)">Group stories</button>
   <button id="unread" title="Only unread (timeline)">Unread</button>
+  <button id="yt" title="Show only YouTube channels">YouTube only</button>
   <button id="nopay" title="Hide articles behind a paywall">Hide paywalled</button>
   <button id="refresh" title="Fetch feeds now">↻</button>
   <button id="cfg">Sources</button>
@@ -94,7 +96,7 @@ main.wide{max-width:1240px}
   <div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0;flex:1">Sources</h2><button id="sclose">Done</button></div>
   <p style="color:var(--mut);font-size:14px">Drag rows to set the order. Checkbox enables a source. The “paywall” box marks all of a source's articles as paywalled, for feeds that don't flag them individually.</p>
   <div class="add"><input id="a-name" placeholder="Name"><input id="a-feed" placeholder="Feed URL (https://…)"><select id="a-lang"><option value="de">DE</option><option value="en">EN</option></select><button id="a-btn">Add</button></div>
-  <div class="add"><label>Import OPML <input id="opml" type="file" accept=".opml,.xml"></label> <a href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
+  <div class="add"><label>Import OPML or YouTube subscriptions.csv <input id="opml" type="file" accept=".opml,.xml,.csv"></label> <a href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
   <h3 style="margin:18px 0 4px">Muted words</h3>
   <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Hides items whose headline or feed tags contain the word at the start of a word: <code>fußball</code> also hides “Fußballer”, but not “Transport”. Use <code>*sport</code> to match anywhere (“Wintersport”). <span id="mhidden"></span></p>
   <div class="add"><input id="m-in" placeholder="e.g. fußball, bundesliga, *sport, formel 1"><button id="m-btn">Mute</button></div>
@@ -111,14 +113,15 @@ async function api(p,body,method){
   const r=await fetch('/api'+p,o);if(!r.ok)throw new Error(await r.text());return r.json();
 }
 let view=localStorage.view2||'ov', lang='', unread=false, q='', srcFilter=null;
-let nopay=localStorage.nopay==='1', group=localStorage.group!=='0', sort=localStorage.sort||'new';
+let nopay=localStorage.nopay==='1', yt=localStorage.yt==='1', group=localStorage.group!=='0', sort=localStorage.sort||'new';
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<3600)return Math.max(1,Math.round(d/60))+' min';if(d<86400)return Math.round(d/3600)+' h';if(d<604800)return Math.round(d/86400)+' d';return new Date(ts*1000).toLocaleDateString()};
 
+const ytBadge=()=>{const b=el('span','yt','▶ YT');b.title='YouTube channel';return b};
 let openEntry=null;
 function itemRow(it,showSrc){
   const w=el('div','entry');
   const r=el('div','item'+(it.read?' read':''));
-  if(showSrc)r.append(el('span','src-tag',it.source));
+  if(showSrc){r.append(el('span','src-tag',it.source));if(it.youtube)r.append(ytBadge())}
   const a=el('a','t',it.title);a.title=it.orig;a.onclick=()=>toggle(it,w,r);r.append(a);
   if(it.paywalled){const p=el('span','pay','paid');p.title='Behind a paywall';r.append(p)}
   r.append(el('span','meta',ago(it.published)));
@@ -131,13 +134,14 @@ async function render(){
   const m=$('#main');m.textContent='';openEntry=null;m.classList.toggle('wide',view==='ov');
   for(const [id,v] of [['#v-ov','ov'],['#v-src','src'],['#v-time','time']])$(id).classList.toggle('on',view===v);
   if(view==='ov'){
-    const data=await api('/stats?x=1'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':''));
+    const data=await api('/stats?x=1'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':''));
     const grid=el('div','grid');
     for(const s of data){
       if(q&&!s.name.toLowerCase().includes(q)&&!s.topics.some(t=>t.toLowerCase().includes(q)))continue;
       const stale=!s.last||Date.now()/1000-s.last>30*86400;
       const c=el('div','card'+(s.week?'':' quiet')+(s.error?' bad':''));
       const top=el('div','top');top.append(el('b','',s.name),el('span','lg',s.lang.toUpperCase()));
+      if(s.youtube)top.append(ytBadge());
       if(s.paywall)top.append(el('span','pay','paid'));
       c.append(top);
       c.append(el('div','stat',s.error?'⚠ '+s.error:(s.last?'last '+(stale?new Date(s.last*1000).toLocaleDateString():ago(s.last)+' ago'):'no articles yet')+' · '+s.week+' in 7 d'));
@@ -148,12 +152,12 @@ async function render(){
     m.append(grid);
     if(!grid.children.length)m.append(el('div','empty','No sources match.'));
   }else if(view==='src'){
-    const data=await api('/overview?per=8'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':''));
+    const data=await api('/overview?per=8'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':''));
     let any=false;
     for(const g of data){
       const items=g.items.filter(i=>!q||i.title.toLowerCase().includes(q)||i.orig.toLowerCase().includes(q));
       if(!items.length&&(q||!g.source.error))continue;any=true;
-      const h=el('div','src');h.append(el('h2','',g.source.name));
+      const h=el('div','src');h.append(el('h2','',g.source.name));if(g.source.youtube)h.append(ytBadge());
       if(g.source.error){const e=el('small','err','⚠ '+g.source.error);h.append(e)}
       else h.append(el('small','',g.source.note||''));
       m.append(h);items.forEach(i=>m.append(itemRow(i,false)));
@@ -180,7 +184,7 @@ async function render(){
     const load=async()=>{
       more.disabled=true;more.textContent='Loading…';
       const bysize=sort==='size';
-      let res=await api('/items?limit='+PAGE+'&offset='+offset+(bysize?'&sort=size':'')+(srcFilter?'&source='+srcFilter.id:'')+(lang?'&lang='+lang:'')+(unread?'&unread=1':'')+(nopay?'&nopay=1':'')+(q?'&q='+encodeURIComponent(q):''));
+      let res=await api('/items?limit='+PAGE+'&offset='+offset+(bysize?'&sort=size':'')+(srcFilter?'&source='+srcFilter.id:'')+(lang?'&lang='+lang:'')+(unread?'&unread=1':'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':'')+(q?'&q='+encodeURIComponent(q):''));
       const items=bysize?res.items:res;
       more.remove();
       items.forEach(place);
@@ -220,6 +224,8 @@ async function toggle(it,w,row){
 }
 $('#enall').onclick=async()=>{const d=await api('/sources/enable-all',{});render();toast(d.enabled?d.enabled+' source'+(d.enabled>1?'s':'')+' enabled':'All sources were already enabled')};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){collapse(openEntry);$('#settings').classList.remove('open')}});
+$('#yt').classList.toggle('on',yt);
+$('#yt').onclick=e=>{yt=!yt;localStorage.yt=yt?'1':'0';e.target.classList.toggle('on',yt);render()};
 $('#nopay').classList.toggle('on',nopay);
 $('#nopay').onclick=e=>{nopay=!nopay;localStorage.nopay=nopay?'1':'0';e.target.classList.toggle('on',nopay);render()};
 $('#v-ov').onclick=()=>{view='ov';localStorage.view2=view;render()};

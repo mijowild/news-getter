@@ -17,7 +17,7 @@ Python 3 standard library only. No dependencies, no build step, one HTML file fo
 - Feeds refresh on start and then every 30 minutes. The ↻ button fetches immediately.
 - After updating the code, restart the server and hard-refresh the browser (Cmd+Shift+R).
 
-The first start loads the 91 sources in `sources.tsv`. Change them to your taste in the **Sources** screen, or import your own OPML file.
+Set your feeds to your taste in the **Sources** screen, or import an OPML or youtube subscription.csv file.
 
 ## What you get
 
@@ -37,9 +37,16 @@ The first start loads the 91 sources in `sources.tsv`. Change them to your taste
 
 ### Taking control
 - **Order and enable**: drag sources into your order, switch them on or off, add one by feed URL or remove it.
+- **Import and export**: *Export OPML* downloads all your sources (in your order, with language and category) as a file you can back up, share or open in any other feed reader. *Import* takes such an OPML file, or a YouTube `subscriptions.csv` (see below).
 - **Muted words**: hide items whose headline or feed tags contain a term. `fußball` matches at the start of a word (also "Fußballer"), `*sport` matches anywhere ("Transport"). Click a tag in an expanded item to mute it. Nothing is deleted, and you can unmute any time.
-- **Hide paywalled**: removes articles behind a paywall, where the feed marks them (Golem `(g+)`, heise `heise+`, Spiegel `(S+)`, Tagesspiegel `(T+)`, tags such as "Premium Only"). Paywalled items carry a red **paid** tag either way. Per source, the **paywall** checkbox marks everything as paywalled, for feeds that don't flag it (preset for Republik and Krautreporter). Feeds with mixed free and paid content and no marker cannot be told apart.
+- **Hide paywalled**: removes articles behind a paywall, where the feed marks them. Paywalled items carry a red **paid** tag either way. Per source, the **paywall** checkbox marks everything as paywalled, for feeds that don't flag it. Feeds with mixed free and paid content and no marker cannot be told apart.
 - **Exclude this source** inside an expanded item switches a source off, with a short Undo.
+
+## Following YouTube channels
+
+Every YouTube channel has an RSS/Atom feed: `https://www.youtube.com/feeds/videos.xml?channel_id=<ID>` (the ID starts with `UC`; playlists work with `playlist_id=`). Paste it into Sources → Add. Titles, dates and descriptions come through; thumbnails are not loaded.
+
+To import all your subscriptions at once, export them from [Google Takeout](https://takeout.google.com) (YouTube and YouTube Music → only *subscriptions*), unzip, and import `subscriptions.csv` in Sources → Import. Channels land in the category "YouTube". Channels that have been deleted show a 404 in the Sources list; remove them with ✕.
 
 ## How story grouping works
 
@@ -58,11 +65,7 @@ The trade-offs: it won't join German and English versions of a story unless a na
 |---|---|
 | `server.py` | Server: feed fetching, parsing, clustering, storage, JSON API, scheduler |
 | `index.html` | Front end (plain HTML/CSS/JS, light and dark mode) |
-| `sources.tsv` | Starting list of 91 sources (language, category, feed, note). Loaded only when the database has no sources yet |
-| `sources.opml` | The same list for import into any other feed reader |
-| `sources-physics.opml` | Only the physics and astronomy sources, to import into an existing database (Sources → Import OPML) |
-| `news.db` | Your data (sources, order, items, muted words). Delete it to reset. Not for version control |
-| `server.log` | Server output. Not for version control |
+| `news.db` | Your data (sources, order, items, muted words). Delete it to reset. Will be created automatically |
 
 ## How it works
 
@@ -87,14 +90,14 @@ The trade-offs: it won't join German and English versions of a story unless a na
 | `DELETE /sources/<id>` | Remove a source and its items |
 | `POST /sources/reorder` | `{"ids": [...]}` in the new order |
 | `POST /sources/enable-all` | Re-enable all sources |
-| `POST /import-opml` | Request body is the OPML file |
+| `POST /import-opml` | Request body is an OPML file or a YouTube `subscriptions.csv` |
+| `GET /export-opml` | Download all sources as OPML |
 | `GET`/`POST /mute` | Muted terms (`{"terms": [...]}`) |
 | `POST /refresh`, `GET /status` | Fetch now, refresh state |
 
 ## Known limits
 
 - Many feeds provide only an excerpt. For those, use the ↗ link to read the full article. There is no full-text extraction.
-- "Independent" in `sources.tsv` is a judgement from public knowledge, not an audit. A few entries are included as an established reference (Tagesschau, BBC, Al Jazeera, The Guardian) and a few carry a political lean, which is noted in the list.
 - Muted-word matching works on headlines and tags only, not on article text.
 - Overview topics are a simple count, not language analysis, so some labels are noisy (feed boilerplate, generic tags). Sources without tags show only recurring words, and sources with very few articles show none.
 - Single user, local only. There is no login and it is not meant to be exposed to a network.

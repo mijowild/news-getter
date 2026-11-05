@@ -352,6 +352,10 @@ def parse_feed(data):
                         link = href
                 elif ch.text and not link:
                     link = ch.text.strip()
+            elif n == "group":   # YouTube: <media:group><media:description>, plain text
+                for g in ch:
+                    if local(g.tag) == "description" and g.text and "mdesc" not in f:
+                        f["mdesc"] = html.escape(g.text.strip()).replace("\n", "<br>")
             elif n in ("title", "guid", "id", "pubDate", "published", "updated", "date",
                        "description", "summary", "content", "encoded") and n not in f:
                 f[n] = inner(ch) if n in ("description", "summary", "content", "encoded") else (ch.text or "").strip()
@@ -361,7 +365,7 @@ def parse_feed(data):
             "title": html.unescape(title),
             "url": link,
             "published": parse_date(f.get("pubDate") or f.get("published") or f.get("date") or f.get("updated")),
-            "summary": f.get("description") or f.get("summary") or "",
+            "summary": f.get("description") or f.get("summary") or f.get("mdesc") or "",
             "content": f.get("encoded") or f.get("content") or "",
             "tags": "|" + "|".join(tags) + "|" if tags else "",
         })
@@ -445,11 +449,15 @@ def site_url(s):
 def item_json(r):
     return {"id": r["id"], "source_id": r["source_id"], "source": r["sname"], "title": r["short_title"] or r["title"],
             "orig": r["title"], "url": r["url"], "published": r["published"], "read": bool(r["read"]), "cluster": r["cluster"],
-            "tags": [t for t in (r["tags"] or "").split("|") if t],
+            "youtube": is_youtube(r["sfeed"]), "tags": [t for t in (r["tags"] or "").split("|") if t],
             "paywalled": bool(r["paywalled"] or r["pmode"])}
 
 
-ITEM_SQL = """SELECT i.*, s.name AS sname, s.paywall_mode AS pmode FROM items i JOIN sources s ON s.id=i.source_id"""
+def is_youtube(feed):
+    return "youtube.com/feeds/" in (feed or "")
+
+
+ITEM_SQL = """SELECT i.*, s.name AS sname, s.feed AS sfeed, s.paywall_mode AS pmode FROM items i JOIN sources s ON s.id=i.source_id"""
 NOPAY_SQL = "NOT (i.paywalled=1 OR s.paywall_mode=1)"
 
 
@@ -538,16 +546,28 @@ class H(BaseHTTPRequestHandler):
                 return self.send(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="utf-8"),
                                  ctype="text/x-opml", filename="news-getter-sources.opml")
             if method == "POST" and p == "/api/import-opml":
-                root = ET.fromstring(self.body())
+                data = self.body().decode("utf-8-sig", "replace")
+                # entries: (name, feed, lang, category). Accepts OPML, or the subscriptions.csv of a YouTube Takeout.
+                entries = []
+                if data.lstrip().startswith("<"):
+                    for o in ET.fromstring(data.encode()).iter("outline"):
+                        if o.get("xmlUrl"):
+                            lang = o.get("language") if o.get("language") in ("de", "en") else "en"
+                            entries.append((o.get("title") or o.get("text") or o.get("xmlUrl"), o.get("xmlUrl"), lang,
+                                            o.get("category") or ""))
+                else:
+                    for r in csv.DictReader(data.splitlines()):
+                        r = {k.strip().casefold(): (v or "").strip() for k, v in r.items() if k}
+                        if r.get("channel id"):
+                            entries.append((r.get("channel title") or r["channel id"],
+                                            "https://www.youtube.com/feeds/videos.xml?channel_id=" + r["channel id"],
+                                            "en", "YouTube"))
                 n = 0
                 pos = c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM sources").fetchone()[0]
-                for o in root.iter("outline"):
-                    if o.get("xmlUrl"):
-                        lang = o.get("language") if o.get("language") in ("de", "en") else "en"
-                        cur = c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,position) VALUES(?,?,?,?,?)",
-                                        (o.get("title") or o.get("text") or o.get("xmlUrl"), o.get("xmlUrl"), lang,
-                                         o.get("category") or "", pos + n))
-                        n += cur.rowcount
+                for name, feed, lang, cat in entries:
+                    cur = c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,position) VALUES(?,?,?,?,?)",
+                                    (name, feed, lang, cat, pos + n))
+                    n += cur.rowcount
                 c.commit()
                 threading.Thread(target=refresh_all, daemon=True).start()
                 return self.send({"added": n})
@@ -571,7 +591,7 @@ class H(BaseHTTPRequestHandler):
                 flt = " AND NOT muted(i.title, i.tags)" + (" AND " + NOPAY_SQL if q.get("nopay") else "")
                 out = []
                 for s in c.execute("SELECT * FROM sources WHERE enabled=1 ORDER BY position, id").fetchall():
-                    if q.get("lang") and s["lang"] != q["lang"]:
+                    if q.get("lang") and s["lang"] != q["lang"] or q.get("yt") and not is_youtube(s["feed"]):
                         continue
                     base = "FROM items i JOIN sources s ON s.id=i.source_id WHERE i.source_id=?" + flt
                     last = c.execute("SELECT MAX(i.published) " + base, (s["id"],)).fetchone()[0]
@@ -579,21 +599,21 @@ class H(BaseHTTPRequestHandler):
                                      (s["id"], week_ago)).fetchall()
                     out.append({"id": s["id"], "name": s["name"], "lang": s["lang"], "last": last, "week": len(rows),
                                 "topics": topics(rows, s["name"]) if rows else [], "error": s["last_error"],
-                                "paywall": bool(s["paywall_mode"])})
+                                "paywall": bool(s["paywall_mode"]), "youtube": is_youtube(s["feed"])})
                 return self.send(out)
             if method == "GET" and p == "/api/overview":
                 per = min(int(q.get("per", 8)), 50)
                 srcs = c.execute("SELECT * FROM sources WHERE enabled=1 ORDER BY position, id").fetchall()
                 out = []
                 for s in srcs:
-                    if q.get("lang") and s["lang"] != q["lang"]:
+                    if q.get("lang") and s["lang"] != q["lang"] or q.get("yt") and not is_youtube(s["feed"]):
                         continue
                     rows = c.execute(ITEM_SQL + " WHERE i.source_id=? AND NOT muted(i.title, i.tags)"
                                         + (" AND " + NOPAY_SQL if q.get("nopay") else "")
                                         + " ORDER BY i.published DESC LIMIT ?", (s["id"], per)).fetchall()
                     out.append({"source": {"id": s["id"], "name": s["name"], "lang": s["lang"], "category": s["category"],
                                            "note": s["note"], "error": s["last_error"],
-                                           "site": site_url(s)},
+                                           "site": site_url(s), "youtube": is_youtube(s["feed"])},
                                 "items": [item_json(r) for r in rows]})
                 return self.send(out)
             if method == "GET" and p == "/api/items":
@@ -606,6 +626,8 @@ class H(BaseHTTPRequestHandler):
                     where.append("i.read=0")
                 if q.get("nopay"):
                     where.append(NOPAY_SQL)
+                if q.get("yt"):
+                    where.append("s.feed LIKE '%youtube.com/feeds/%'")
                 if q.get("q"):
                     where.append("(i.title LIKE ? OR i.short_title LIKE ? OR i.tags LIKE ?)"); args += [f"%{q['q']}%"] * 3
                 if q.get("sort") == "size":
