@@ -4,7 +4,7 @@
 
 Most news comes through feeds ranked by someone else's idea of what should hold your attention: engagement, outrage, whatever keeps you scrolling. news-getter is the opposite. You pick the sources and their order. It shows short headlines and nothing else: no ranking algorithm, no recommendations, no images, no notifications, no account, no tracking.
 
-It runs on your own machine, reads the RSS/Atom feeds of independent outlets and blogs (German and English), and stores everything in a single local SQLite file. When several outlets report the same story, it folds them into one row, so a day of news is a list of stories, not 40 copies of the same headline.
+It runs on your own machine, reads the RSS/Atom feeds of independent outlets and blogs (German and English), and stores everything in local SQLite files, one per profile. When several outlets report the same story, it folds them into one row, so a day of news is a list of stories, not 40 copies of the same headline.
 
 Python 3 standard library only. No dependencies, no build step, one HTML file for the front end.
 
@@ -18,6 +18,16 @@ Python 3 standard library only. No dependencies, no build step, one HTML file fo
 - After updating the code, restart the server and hard-refresh the browser (Cmd+Shift+R).
 
 Set your feeds to your taste in the **Sources** screen, or import an OPML or youtube subscription.csv file.
+
+## Profiles
+
+A profile is a separate database with its own sources, articles, muted words, read state and view. Use one for a **broad view of the world**, where many outlets report the same events and the topic map and story grouping shine, and others for **specialised feeds** (say physics), where there are few duplicates and a plain timeline reads better.
+
+- Pick the active profile in the dropdown at the top left (it appears once you have more than one). Everything on screen, including Sources and Muted words, belongs to that profile. The choice and the last view per profile are remembered; a specialised profile opens on the Timeline, the world profile on Topics.
+- **Create** one under Sources → Profiles: give it a name and optionally an OPML file of sources. If a file `sources-<name>.opml` sits next to `server.py` (like e.g. `sources-physics.opml`), a profile of that name is seeded from it automatically. **Delete** a profile by clicking its ✕ chip there.
+- `/?profile=physics` opens a profile directly, so you can bookmark one.
+- Your existing data is the profile **World** (`news.db`); nothing to migrate. Other profiles live in `news-<name>.db`.
+- All profiles refresh on the same schedule. A source that is in two profiles is fetched twice, and its read state is separate.
 
 ## What you get
 
@@ -93,7 +103,9 @@ The trade-offs: it won't join German and English versions of a story unless a na
 |---|---|
 | `server.py` | Server: feed fetching, parsing, clustering, storage, JSON API, scheduler |
 | `index.html` | Front end (plain HTML/CSS/JS, light and dark mode) |
-| `news.db` | Your data (sources, order, items, muted words). Delete it to reset. Will be created automatically |
+| `news.db` | The World profile: sources, order, items, muted words. Delete it to reset. Created automatically |
+| `news-<name>.db` | One file per additional profile |
+| `sources-<name>.opml` | Optional. Seeds a new profile of that name with these sources |
 
 ## How it works
 
@@ -106,8 +118,12 @@ The trade-offs: it won't join German and English versions of a story unless a na
 
 ## API (all JSON, under `/api`)
 
+Every route acts on one profile, chosen with the `X-Profile` request header or a `?profile=` query parameter (default `world`; unknown names get a 404).
+
 | Route | Purpose |
 |---|---|
+| `GET /profiles`, `POST /profiles` | List profiles; create one (`{"name", "opml"?}`) |
+| `DELETE /profiles/<id>` | Delete a profile and its database (not `world`) |
 | `GET /topics?days=3&lang=&nopay=1&yt=` | Topic clusters: `{total, topics[{label, n, sources, fresh, unread, items, stories}], other}` |
 | `GET /stats?lang=&nopay=1` | Per-source overview: last article, 7-day count, topics |
 | `GET /overview?per=8&lang=&nopay=1` | Sources in order with their latest items |

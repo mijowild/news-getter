@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """news-getter: tiny local RSS/Atom reader. Stdlib only. Run: python3 server.py"""
-import collections, csv, html, json, math, os, re, sqlite3, threading, time, urllib.request
+import collections, csv, glob, html, json, math, os, re, sqlite3, threading, time, urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -11,6 +11,8 @@ from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "news.db")
+DEFAULT_PROFILE = "world"          # lives in news.db; every other profile p lives in news-<p>.db
+PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,29}")
 PORT = int(os.environ.get("PORT", "8765"))
 REFRESH_EVERY = 30 * 60
 KEEP_PER_SOURCE = 300
@@ -104,8 +106,20 @@ class Conn(sqlite3.Connection):
     mute_terms = ()
 
 
-def db():
-    c = sqlite3.connect(DB_PATH, timeout=30, factory=Conn)
+ctx = threading.local()   # the profile a request thread works on
+
+
+def profile_path(profile):
+    return DB_PATH if profile == DEFAULT_PROFILE else os.path.join(ROOT, f"news-{profile}.db")
+
+
+def list_profiles():
+    names = [os.path.basename(p)[5:-3] for p in glob.glob(os.path.join(ROOT, "news-*.db"))]
+    return [DEFAULT_PROFILE] + sorted(n for n in names if PROFILE_RE.fullmatch(n))
+
+
+def db(profile=None):
+    c = sqlite3.connect(profile_path(profile or getattr(ctx, "profile", DEFAULT_PROFILE)), timeout=30, factory=Conn)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     row = c.execute("SELECT value FROM settings WHERE key='mute'").fetchone() if c.execute(
@@ -116,8 +130,8 @@ def db():
     return c
 
 
-def init_db():
-    c = db()
+def init_db(profile=DEFAULT_PROFILE):
+    c = db(profile)
     c.executescript(SCHEMA)
     if "tags" not in [r["name"] for r in c.execute("PRAGMA table_info(items)")]:
         c.execute("ALTER TABLE items ADD COLUMN tags TEXT DEFAULT ''")
@@ -135,7 +149,7 @@ def init_db():
         p = is_paywalled(r["title"], r["tags"])
         if p != r["paywalled"]:
             c.execute("UPDATE items SET paywalled=? WHERE id=?", (p, r["id"]))
-    if c.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0:
+    if profile == DEFAULT_PROFILE and c.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0:
         path = os.path.join(ROOT, "sources.tsv")
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
@@ -517,8 +531,8 @@ def parse_feed(data):
 
 # ---------- fetching ----------
 
-refresh_lock = threading.Lock()
-status = {"refreshing": False, "last": None}
+refresh_locks = collections.defaultdict(threading.Lock)
+statuses = collections.defaultdict(lambda: {"refreshing": False, "last": None})
 
 
 def fetch_source(s):
@@ -541,12 +555,13 @@ def fetch_source(s):
         return s["id"], [], None, None, f"{type(e).__name__}: {e}"[:200], None
 
 
-def refresh_all():
-    if not refresh_lock.acquire(blocking=False):
+def refresh_all(profile=DEFAULT_PROFILE):
+    lock, status = refresh_locks[profile], statuses[profile]
+    if not lock.acquire(blocking=False):
         return
     status["refreshing"] = True
     try:
-        c = db()
+        c = db(profile)
         srcs = c.execute("SELECT * FROM sources WHERE enabled=1").fetchall()
         with ThreadPoolExecutor(8) as ex:
             results = list(ex.map(fetch_source, srcs))
@@ -571,15 +586,16 @@ def refresh_all():
         status["last"] = int(time.time())
     finally:
         status["refreshing"] = False
-        refresh_lock.release()
+        lock.release()
 
 
 def scheduler():
     while True:
-        try:
-            refresh_all()
-        except Exception as e:
-            print("refresh error:", e)
+        for profile in list_profiles():
+            try:
+                refresh_all(profile)
+            except Exception as e:
+                print(f"refresh error ({profile}):", e)
         time.sleep(REFRESH_EVERY)
 
 
@@ -621,6 +637,40 @@ ITEM_SQL = """SELECT i.*, s.name AS sname, s.feed AS sfeed, s.paywall_mode AS pm
 NOPAY_SQL = "NOT (i.paywalled=1 OR s.paywall_mode=1)"
 
 
+def parse_import(data):
+    """-> [(name, feed, lang, category)] from an OPML file or the subscriptions.csv of a YouTube Takeout."""
+    entries = []
+    if data.lstrip().startswith("<"):
+        for o in ET.fromstring(data.encode()).iter("outline"):
+            if o.get("xmlUrl"):
+                lang = o.get("language") if o.get("language") in ("de", "en") else "en"
+                entries.append((o.get("title") or o.get("text") or o.get("xmlUrl"), o.get("xmlUrl"), lang,
+                                o.get("category") or ""))
+    else:
+        for r in csv.DictReader(data.splitlines()):
+            r = {k.strip().casefold(): (v or "").strip() for k, v in r.items() if k}
+            if r.get("channel id"):
+                entries.append((r.get("channel title") or r["channel id"],
+                                "https://www.youtube.com/feeds/videos.xml?channel_id=" + r["channel id"],
+                                "en", "YouTube"))
+    return entries
+
+
+def add_sources(c, entries):
+    n = 0
+    pos = c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM sources").fetchone()[0]
+    for name, feed, lang, cat in entries:
+        cur = c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,position) VALUES(?,?,?,?,?)",
+                        (name, feed, lang, cat, pos + n))
+        n += cur.rowcount
+    c.commit()
+    return n
+
+
+def profile_slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").casefold()).strip("-")[:30]
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -649,13 +699,49 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         p = u.path
-        c = db()
+        profile = (self.headers.get("X-Profile") or q.get("profile") or DEFAULT_PROFILE).strip()
+        if p.startswith("/api/") and profile not in list_profiles():
+            return self.send({"error": "unknown profile"}, 404)
+        ctx.profile = self.profile = profile
+        c = db(profile)
         try:
             if method == "GET" and p == "/":
                 with open(os.path.join(ROOT, "index.html"), "rb") as f:
                     return self.send(f.read(), ctype="text/html")
             if method == "GET" and p == "/api/status":
-                return self.send(status)
+                return self.send(statuses[profile])
+            if method == "GET" and p == "/api/profiles":
+                return self.send({"profiles": list_profiles(), "default": DEFAULT_PROFILE})
+            if method == "POST" and p == "/api/profiles":
+                b = self.json_body()
+                slug = profile_slug(b.get("name"))
+                if not PROFILE_RE.fullmatch(slug):
+                    return self.send({"error": "Pick a name with letters or digits."}, 400)
+                if slug in list_profiles():
+                    return self.send({"error": f"Profile '{slug}' already exists."}, 409)
+                init_db(slug)
+                nc = db(slug)
+                seed = b.get("opml")
+                if not seed and os.path.exists(os.path.join(ROOT, f"sources-{slug}.opml")):   # sources-<name>.opml seeds it
+                    with open(os.path.join(ROOT, f"sources-{slug}.opml"), encoding="utf-8") as f:
+                        seed = f.read()
+                n = add_sources(nc, parse_import(seed)) if seed else 0
+                nc.close()
+                threading.Thread(target=refresh_all, args=(slug,), daemon=True).start()
+                return self.send({"id": slug, "added": n})
+            m = re.fullmatch(r"/api/profiles/([a-z0-9_-]+)", p)
+            if method == "DELETE" and m:
+                if m.group(1) == DEFAULT_PROFILE or m.group(1) not in list_profiles():
+                    return self.send({"error": "Cannot delete this profile."}, 400)
+                if refresh_locks[m.group(1)].locked():
+                    return self.send({"error": "It is refreshing right now, try again in a moment."}, 409)
+                c.close()
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        os.remove(profile_path(m.group(1)) + suffix)
+                    except FileNotFoundError:
+                        pass
+                return self.send({"ok": True})
             if method == "GET" and p == "/api/mute":
                 hidden = c.execute("SELECT COUNT(*) FROM items i JOIN sources s ON s.id=i.source_id "
                                    "WHERE s.enabled=1 AND muted(i.title, i.tags)").fetchone()[0]
@@ -666,7 +752,7 @@ class H(BaseHTTPRequestHandler):
                 c.commit()
                 return self.send({"ok": True})
             if method == "POST" and p == "/api/refresh":
-                threading.Thread(target=refresh_all, daemon=True).start()
+                threading.Thread(target=refresh_all, args=(profile,), daemon=True).start()
                 return self.send({"ok": True})
             if method == "GET" and p == "/api/sources":
                 rows = c.execute("""SELECT s.*, (SELECT COUNT(*) FROM items WHERE source_id=s.id) AS n
@@ -681,13 +767,13 @@ class H(BaseHTTPRequestHandler):
                 c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,position) VALUES(?,?,?,?,?)",
                           (b.get("name") or b["feed"], b["feed"], b.get("lang", "en"), b.get("category", ""), pos))
                 c.commit()
-                threading.Thread(target=refresh_all, daemon=True).start()
+                threading.Thread(target=refresh_all, args=(profile,), daemon=True).start()
                 return self.send({"ok": True})
             if method == "POST" and p == "/api/sources/enable-all":
                 n = c.execute("UPDATE sources SET enabled=1 WHERE enabled=0").rowcount
                 c.commit()
                 if n:
-                    threading.Thread(target=refresh_all, daemon=True).start()
+                    threading.Thread(target=refresh_all, args=(profile,), daemon=True).start()
                 return self.send({"enabled": n})
             if method == "POST" and p == "/api/sources/reorder":
                 for pos, sid in enumerate(self.json_body().get("ids", [])):
@@ -706,30 +792,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="utf-8"),
                                  ctype="text/x-opml", filename="news-getter-sources.opml")
             if method == "POST" and p == "/api/import-opml":
-                data = self.body().decode("utf-8-sig", "replace")
-                # entries: (name, feed, lang, category). Accepts OPML, or the subscriptions.csv of a YouTube Takeout.
-                entries = []
-                if data.lstrip().startswith("<"):
-                    for o in ET.fromstring(data.encode()).iter("outline"):
-                        if o.get("xmlUrl"):
-                            lang = o.get("language") if o.get("language") in ("de", "en") else "en"
-                            entries.append((o.get("title") or o.get("text") or o.get("xmlUrl"), o.get("xmlUrl"), lang,
-                                            o.get("category") or ""))
-                else:
-                    for r in csv.DictReader(data.splitlines()):
-                        r = {k.strip().casefold(): (v or "").strip() for k, v in r.items() if k}
-                        if r.get("channel id"):
-                            entries.append((r.get("channel title") or r["channel id"],
-                                            "https://www.youtube.com/feeds/videos.xml?channel_id=" + r["channel id"],
-                                            "en", "YouTube"))
-                n = 0
-                pos = c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM sources").fetchone()[0]
-                for name, feed, lang, cat in entries:
-                    cur = c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,position) VALUES(?,?,?,?,?)",
-                                    (name, feed, lang, cat, pos + n))
-                    n += cur.rowcount
-                c.commit()
-                threading.Thread(target=refresh_all, daemon=True).start()
+                n = add_sources(c, parse_import(self.body().decode("utf-8-sig", "replace")))
+                threading.Thread(target=refresh_all, args=(profile,), daemon=True).start()
                 return self.send({"added": n})
             m = re.fullmatch(r"/api/sources/(\d+)", p)
             if m:
@@ -851,10 +915,11 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    init_db()
-    _c = db()
-    recluster(_c)
-    _c.close()
+    for _p in list_profiles():
+        init_db(_p)
+        _c = db(_p)
+        recluster(_c)
+        _c.close()
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"news-getter on http://127.0.0.1:{PORT}")
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

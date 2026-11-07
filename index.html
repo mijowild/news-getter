@@ -85,6 +85,7 @@ main.wide{max-width:1240px}
 <body>
 <header>
   <h1>News</h1>
+  <select id="prof" title="Profile: each profile has its own sources, articles, muted words and read state"></select>
   <button id="v-topics" class="on">Topics</button>
   <button id="v-ov">Overview</button>
   <button id="v-src">By source</button>
@@ -109,7 +110,11 @@ main.wide{max-width:1240px}
   <div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0;flex:1">Sources</h2><button id="sclose">Done</button></div>
   <p style="color:var(--mut);font-size:14px">Drag rows to set the order. Checkbox enables a source. The “paywall” box marks all of a source's articles as paywalled, for feeds that don't flag them individually.</p>
   <div class="add"><input id="a-name" placeholder="Name"><input id="a-feed" placeholder="Feed URL (https://…)"><select id="a-lang"><option value="de">DE</option><option value="en">EN</option></select><button id="a-btn">Add</button></div>
-  <div class="add"><label>Import OPML or YouTube subscriptions.csv <input id="opml" type="file" accept=".opml,.xml,.csv"></label> <a href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
+  <div class="add"><label>Import OPML or YouTube subscriptions.csv <input id="opml" type="file" accept=".opml,.xml,.csv"></label> <a id="exp" href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
+  <h3 style="margin:18px 0 4px">Profiles</h3>
+  <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Each profile is its own database: its own sources, articles, muted words and read state. Use one for a broad view of the world (where topic clustering shines) and others for specialised feeds. The sources, muted words and order below belong to the profile selected in the top bar.</p>
+  <div class="chips" id="plist"></div>
+  <div class="add"><input id="p-name" placeholder="New profile name, e.g. Physics"><label>Sources (optional OPML) <input id="p-opml" type="file" accept=".opml,.xml"></label><button id="p-btn">Create</button></div>
   <h3 style="margin:18px 0 4px">Muted words</h3>
   <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Hides items whose headline or feed tags contain the word at the start of a word: <code>fußball</code> also hides “Fußballer”, but not “Transport”. Use <code>*sport</code> to match anywhere (“Wintersport”). <span id="mhidden"></span></p>
   <div class="add"><input id="m-in" placeholder="e.g. fußball, bundesliga, *sport, formel 1"><button id="m-btn">Mute</button></div>
@@ -121,11 +126,14 @@ main.wide{max-width:1240px}
 <script>
 const $=s=>document.querySelector(s);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+let profile=new URLSearchParams(location.search).get('profile')||localStorage.profile||'world', profiles=['world'];
 async function api(p,body,method){
-  const o=body!==undefined?{method:method||'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:(method?{method}:undefined);
-  const r=await fetch('/api'+p,o);if(!r.ok)throw new Error(await r.text());return r.json();
+  const o={headers:{'X-Profile':profile}};
+  if(body!==undefined){o.method=method||'POST';o.headers['content-type']='application/json';o.body=JSON.stringify(body)}
+  else if(method)o.method=method;
+  const r=await fetch('/api'+p,o);if(!r.ok){let m=await r.text();try{m=JSON.parse(m).error||m}catch(e){}throw new Error(m)}return r.json();
 }
-let view=localStorage.view3||'topics', lang='', unread=false, q='', srcFilter=null;
+let view='topics', lang='', unread=false, q='', srcFilter=null;
 let nopay=localStorage.nopay==='1', yt=({'1':'only','only':'only','no':'no'})[localStorage.yt]||'', days=+localStorage.days||3, selTopic=null, group=localStorage.group!=='0', sort=localStorage.sort||'new';
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<3600)return Math.max(1,Math.round(d/60))+' min';if(d<86400)return Math.round(d/3600)+' h';if(d<604800)return Math.round(d/86400)+' d';return new Date(ts*1000).toLocaleDateString()};
 
@@ -160,7 +168,7 @@ async function render(){
       c.append(top);
       c.append(el('div','stat',s.error?'⚠ '+s.error:(s.last?'last '+(stale?new Date(s.last*1000).toLocaleDateString():ago(s.last)+' ago'):'no articles yet')+' · '+s.week+' in 7 d'));
       c.append(el('div','topics',s.topics.length?s.topics.join(' · '):'\u00a0'));
-      c.onclick=()=>{srcFilter={id:s.id,name:s.name};view='time';localStorage.view3=view;render()};
+      c.onclick=()=>{srcFilter={id:s.id,name:s.name};view='time';saveView();render()};
       grid.append(c);
     }
     m.append(grid);
@@ -286,6 +294,22 @@ function showTopic(panel,t){
   box.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
+const profName=p=>p.charAt(0).toUpperCase()+p.slice(1).replace(/-/g,' ');
+const saveView=()=>{try{localStorage['view3:'+profile]=view}catch(e){}};
+const loadView=()=>localStorage['view3:'+profile]||(profile==='world'?'topics':'time');   // specialised profiles have little duplicate coverage
+async function loadProfiles(){
+  try{profiles=(await api('/profiles')).profiles}catch(e){profiles=['world']}
+  if(!profiles.includes(profile))profile='world';
+  const sel=$('#prof');sel.textContent='';
+  profiles.forEach(p=>{const o=el('option','',profName(p));o.value=p;sel.append(o)});
+  sel.value=profile;sel.style.display=profiles.length>1?'':'none';
+}
+async function switchProfile(p){
+  profile=p;localStorage.profile=p;srcFilter=null;selTopic=null;openEntry=null;view=loadView();
+  $('#prof').value=p;render();
+}
+$('#prof').onchange=e=>switchProfile(e.target.value);
+
 let toastT;
 function toast(msg,undo){
   const t=$('#toast');t.textContent=msg;t.style.display='flex';
@@ -317,10 +341,10 @@ $('#yt').value=yt;
 $('#yt').onchange=e=>{yt=e.target.value;localStorage.yt=yt;selTopic=null;render()};
 $('#nopay').classList.toggle('on',nopay);
 $('#nopay').onclick=e=>{nopay=!nopay;localStorage.nopay=nopay?'1':'0';e.target.classList.toggle('on',nopay);render()};
-$('#v-topics').onclick=()=>{view='topics';localStorage.view3=view;render()};
-$('#v-ov').onclick=()=>{view='ov';localStorage.view3=view;render()};
-$('#v-src').onclick=()=>{view='src';localStorage.view3=view;render()};
-$('#v-time').onclick=()=>{srcFilter=null;view='time';localStorage.view3=view;render()};
+$('#v-topics').onclick=()=>{view='topics';saveView();render()};
+$('#v-ov').onclick=()=>{view='ov';saveView();render()};
+$('#v-src').onclick=()=>{view='src';saveView();render()};
+$('#v-time').onclick=()=>{srcFilter=null;view='time';saveView();render()};
 $('#lang').onchange=e=>{lang=e.target.value;selTopic=null;render()};
 $('#sort').value=sort;
 $('#sort').onchange=e=>{sort=e.target.value;localStorage.sort=sort;render()};
@@ -354,6 +378,22 @@ async function loadSettings(){
     box.append(r);
   }
 }
+async function loadProfileList(){
+  const box=$('#plist');box.textContent='';
+  profiles.forEach(p=>{const c=el('span','chip'+(p===profile?' m':''),profName(p)+(p==='world'?'':' ✕'));
+    if(p!=='world'){c.title='Delete this profile and all its articles';c.onclick=async()=>{
+      if(!confirm('Delete profile '+profName(p)+' with all its sources and articles?'))return;
+      try{await api('/profiles/'+p,undefined,'DELETE')}catch(e){alert(e.message);return}
+      await loadProfiles();if(profile===p)await switchProfile('world');loadProfileList()}}
+    box.append(c)});
+}
+$('#p-btn').onclick=async()=>{
+  const f=$('#p-opml').files[0];
+  try{const d=await api('/profiles',{name:$('#p-name').value,opml:f?await f.text():undefined});
+    $('#p-name').value='';$('#p-opml').value='';await loadProfiles();await switchProfile(d.id);
+    $('#settings').classList.remove('open');toast(profName(d.id)+' created with '+d.added+' sources — fetching…')}
+  catch(e){alert(e.message)}
+};
 async function loadMute(){
   const d=await api('/mute');const box=$('#mchips');box.textContent='';
   $('#mhidden').textContent=d.terms.length?`Currently hiding ${d.hidden} stored items.`:'';
@@ -366,14 +406,14 @@ async function addMute(raw){
 }
 $('#m-btn').onclick=async()=>{await addMute($('#m-in').value);$('#m-in').value='';loadMute()};
 $('#m-in').onkeydown=e=>{if(e.key==='Enter')$('#m-btn').click()};
-$('#cfg').onclick=()=>{$('#settings').classList.add('open');loadSettings();loadMute()};
+$('#cfg').onclick=()=>{$('#exp').href='/api/export-opml?profile='+profile;$('#settings').classList.add('open');loadSettings();loadMute();loadProfileList()};
 $('#sclose').onclick=()=>{$('#settings').classList.remove('open');render()};
 $('#a-btn').onclick=async()=>{const feed=$('#a-feed').value.trim();if(!feed)return;
   await api('/sources',{name:$('#a-name').value.trim(),feed,lang:$('#a-lang').value});$('#a-name').value=$('#a-feed').value='';loadSettings()};
 $('#opml').onchange=async e=>{const f=e.target.files[0];if(!f)return;
-  const r=await fetch('/api/import-opml',{method:'POST',body:await f.text()});const d=await r.json();alert((d.added??0)+' sources added');loadSettings()};
+  const r=await fetch('/api/import-opml',{method:'POST',headers:{'X-Profile':profile},body:await f.text()});const d=await r.json();alert((d.added??0)+' sources added');loadSettings()};
 
-render();
+(async()=>{await loadProfiles();view=loadView();render()})();
 </script>
 </body>
 </html>
