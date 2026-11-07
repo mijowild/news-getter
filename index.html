@@ -107,13 +107,12 @@ main.wide{max-width:1240px}
 <div id="toast"></div>
 
 <div id="settings"><div class="in">
-  <div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0;flex:1">Sources</h2><button id="sclose">Done</button></div>
+  <div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">Sources</h2><label style="flex:1;display:flex;gap:6px;align-items:center;font-size:14px;color:var(--mut)">of profile <select id="sprof" title="Which profile's sources, muted words and order you are editing"></select></label><button id="p-del" title="Delete this profile with all its sources and articles">Delete profile</button><button id="sclose">Done</button></div>
   <p style="color:var(--mut);font-size:14px">Drag rows to set the order. Checkbox enables a source. The “paywall” box marks all of a source's articles as paywalled, for feeds that don't flag them individually.</p>
   <div class="add"><input id="a-name" placeholder="Name"><input id="a-feed" placeholder="Feed URL (https://…)"><select id="a-lang"><option value="de">DE</option><option value="en">EN</option></select><button id="a-btn">Add</button></div>
   <div class="add"><label>Import OPML or YouTube subscriptions.csv <input id="opml" type="file" accept=".opml,.xml,.csv"></label> <a id="exp" href="/api/export-opml" download><button type="button" title="Download all current sources as an OPML file">Export OPML</button></a></div>
   <h3 style="margin:18px 0 4px">Profiles</h3>
-  <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Each profile is its own database: its own sources, articles, muted words and read state. Use one for a broad view of the world (where topic clustering shines) and others for specialised feeds. The sources, muted words and order below belong to the profile selected in the top bar.</p>
-  <div class="chips" id="plist"></div>
+  <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Each profile is its own database: its own sources, articles, muted words and read state. Use one for a broad view of the world (where topic clustering shines) and others for specialised feeds. Everything on this screen (sources, muted words, order, import and export) applies to the profile chosen at the top.</p>
   <div class="add"><input id="p-name" placeholder="New profile name, e.g. Physics"><label>Sources (optional OPML) <input id="p-opml" type="file" accept=".opml,.xml"></label><button id="p-btn">Create</button></div>
   <h3 style="margin:18px 0 4px">Muted words</h3>
   <p style="color:var(--mut);font-size:14px;margin:0 0 6px">Hides items whose headline or feed tags contain the word at the start of a word: <code>fußball</code> also hides “Fußballer”, but not “Transport”. Use <code>*sport</code> to match anywhere (“Wintersport”). <span id="mhidden"></span></p>
@@ -303,10 +302,11 @@ async function loadProfiles(){
   const sel=$('#prof');sel.textContent='';
   profiles.forEach(p=>{const o=el('option','',profName(p));o.value=p;sel.append(o)});
   sel.value=profile;sel.style.display=profiles.length>1?'':'none';
+  const ss=$('#sprof');ss.textContent='';profiles.forEach(p=>{const o=el('option','',profName(p));o.value=p;ss.append(o)});ss.value=profile;$('#p-del').disabled=profile==='world';
 }
 async function switchProfile(p){
   profile=p;localStorage.profile=p;srcFilter=null;selTopic=null;openEntry=null;view=loadView();
-  $('#prof').value=p;render();
+  $('#prof').value=p;$('#sprof').value=p;$('#p-del').disabled=p==='world';$('#exp').href='/api/export-opml?profile='+p;render();
 }
 $('#prof').onchange=e=>switchProfile(e.target.value);
 
@@ -378,20 +378,18 @@ async function loadSettings(){
     box.append(r);
   }
 }
-async function loadProfileList(){
-  const box=$('#plist');box.textContent='';
-  profiles.forEach(p=>{const c=el('span','chip'+(p===profile?' m':''),profName(p)+(p==='world'?'':' ✕'));
-    if(p!=='world'){c.title='Delete this profile and all its articles';c.onclick=async()=>{
-      if(!confirm('Delete profile '+profName(p)+' with all its sources and articles?'))return;
-      try{await api('/profiles/'+p,undefined,'DELETE')}catch(e){alert(e.message);return}
-      await loadProfiles();if(profile===p)await switchProfile('world');loadProfileList()}}
-    box.append(c)});
-}
+$('#sprof').onchange=async e=>{await switchProfile(e.target.value);loadSettings();loadMute()};
+$('#p-del').onclick=async()=>{
+  if(profile==='world'||!confirm('Delete profile '+profName(profile)+' with all its sources and articles?'))return;
+  const gone=profile;
+  try{await api('/profiles/'+gone,undefined,'DELETE')}catch(e){alert(e.message);return}
+  profile='world';await loadProfiles();await switchProfile('world');loadSettings();loadMute();
+};
 $('#p-btn').onclick=async()=>{
   const f=$('#p-opml').files[0];
   try{const d=await api('/profiles',{name:$('#p-name').value,opml:f?await f.text():undefined});
-    $('#p-name').value='';$('#p-opml').value='';await loadProfiles();await switchProfile(d.id);
-    $('#settings').classList.remove('open');toast(profName(d.id)+' created with '+d.added+' sources — fetching…')}
+    $('#p-name').value='';$('#p-opml').value='';await loadProfiles();await switchProfile(d.id);loadSettings();loadMute();
+    toast(profName(d.id)+' created with '+d.added+' sources — fetching…')}
   catch(e){alert(e.message)}
 };
 async function loadMute(){
@@ -406,14 +404,14 @@ async function addMute(raw){
 }
 $('#m-btn').onclick=async()=>{await addMute($('#m-in').value);$('#m-in').value='';loadMute()};
 $('#m-in').onkeydown=e=>{if(e.key==='Enter')$('#m-btn').click()};
-$('#cfg').onclick=()=>{$('#exp').href='/api/export-opml?profile='+profile;$('#settings').classList.add('open');loadSettings();loadMute();loadProfileList()};
+$('#cfg').onclick=()=>{$('#exp').href='/api/export-opml?profile='+profile;$('#settings').classList.add('open');loadSettings();loadMute()};
 $('#sclose').onclick=()=>{$('#settings').classList.remove('open');render()};
 $('#a-btn').onclick=async()=>{const feed=$('#a-feed').value.trim();if(!feed)return;
   await api('/sources',{name:$('#a-name').value.trim(),feed,lang:$('#a-lang').value});$('#a-name').value=$('#a-feed').value='';loadSettings()};
 $('#opml').onchange=async e=>{const f=e.target.files[0];if(!f)return;
   const r=await fetch('/api/import-opml',{method:'POST',headers:{'X-Profile':profile},body:await f.text()});const d=await r.json();alert((d.added??0)+' sources added');loadSettings()};
 
-(async()=>{await loadProfiles();view=loadView();render()})();
+(async()=>{await loadProfiles();view=loadView();render();if(location.hash==='#sources')$('#cfg').click()})();
 </script>
 </body>
 </html>

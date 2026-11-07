@@ -23,9 +23,10 @@ Set your feeds to your taste in the **Sources** screen, or import an OPML or you
 
 A profile is a separate database with its own sources, articles, muted words, read state and view. Use one for a **broad view of the world**, where many outlets report the same events and the topic map and story grouping shine, and others for **specialised feeds** (say physics), where there are few duplicates and a plain timeline reads better.
 
-- Pick the active profile in the dropdown at the top left (it appears once you have more than one). Everything on screen, including Sources and Muted words, belongs to that profile. The choice and the last view per profile are remembered; a specialised profile opens on the Timeline, the world profile on Topics.
-- **Create** one under Sources → Profiles: give it a name and optionally an OPML file of sources. If a file `sources-<name>.opml` sits next to `server.py` (like e.g. `sources-physics.opml`), a profile of that name is seeded from it automatically. **Delete** a profile by clicking its ✕ chip there.
-- `/?profile=physics` opens a profile directly, so you can bookmark one.
+- Pick the active profile in the dropdown at the top left (it appears once you have more than one). Everything on screen belongs to that profile. The choice and the last view per profile are remembered; a specialised profile opens on the Timeline, the world profile on Topics.
+- **Sources screen:** it has its own "of profile" selector at the top. Choose a profile there and the source list, order, muted words, import and export all switch to it, so you add, enable, reorder and delete sources for that profile only.
+- **Create** one under Sources → Profiles: give it a name and optionally an OPML file of sources. If a file `sources-<name>.opml` sits next to `server.py` (like e.g. `sources-physics.opml`), a profile of that name is seeded from it automatically. **Delete** the selected profile with the Delete profile button at the top of the Sources screen.
+- `/?profile=physics` opens a profile directly, and `/?profile=physics#sources` opens its Sources screen, so you can bookmark them.
 - Your existing data is the profile **World** (`news.db`); nothing to migrate. Other profiles live in `news-<name>.db`.
 - All profiles refresh on the same schedule. A source that is in two profiles is fetched twice, and its read state is separate.
 
