@@ -67,13 +67,26 @@ main.wide{max-width:1240px}
 .chip.m{border-color:var(--warn);color:var(--warn)}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;z-index:30;display:none;gap:12px;align-items:center;font-size:14px}
 #toast button{background:none;border:0;color:inherit;text-decoration:underline;padding:0}
+#map{width:100%;height:auto;display:block;margin:6px 0 4px}
+#map g.b{cursor:pointer}#map g.b circle{fill:var(--acc);stroke:var(--acc);stroke-width:1.5;transition:stroke-width .1s}
+#map g.b.other circle{fill:var(--mut);stroke:var(--mut);stroke-dasharray:6 5}
+#map g.b:hover circle{stroke-width:4}#map g.b.sel circle{stroke:var(--fg);stroke-width:3.5}
+#map text{fill:var(--fg);text-anchor:middle;pointer-events:none;font-weight:600}
+#map text.c{font-weight:400;opacity:.75}
+.tbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;color:var(--mut);font-size:13px}
+.tbar .sw{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--acc);vertical-align:-2px}
+.tpanel{border-top:2px solid var(--acc);margin-top:14px;padding-top:6px}
+.tpanel .sub{color:var(--mut);font-size:13px;margin:2px 0 8px}
+.tpanel h3{margin:8px 0 0;font-size:17px}
+.tpanel h4{margin:14px 0 2px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--acc)}
 .empty{color:var(--mut);padding:40px 0;text-align:center}
 </style>
 </head>
 <body>
 <header>
   <h1>News</h1>
-  <button id="v-ov" class="on">Overview</button>
+  <button id="v-topics" class="on">Topics</button>
+  <button id="v-ov">Overview</button>
   <button id="v-src">By source</button>
   <button id="v-time">Timeline</button>
   <select id="lang"><option value="">DE + EN</option><option value="de">Deutsch</option><option value="en">English</option></select>
@@ -81,7 +94,7 @@ main.wide{max-width:1240px}
   <select id="sort" title="Timeline order"><option value="new">Newest first</option><option value="size">Most covered</option></select>
   <button id="group" title="Merge headlines about the same story (Timeline)">Group stories</button>
   <button id="unread" title="Only unread (timeline)">Unread</button>
-  <button id="yt" title="Show only YouTube channels">YouTube only</button>
+  <select id="yt" title="YouTube channels"><option value="">All sources</option><option value="no">No YouTube</option><option value="only">YouTube only</option></select>
   <button id="nopay" title="Hide articles behind a paywall">Hide paywalled</button>
   <button id="refresh" title="Fetch feeds now">↻</button>
   <button id="cfg">Sources</button>
@@ -112,8 +125,8 @@ async function api(p,body,method){
   const o=body!==undefined?{method:method||'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:(method?{method}:undefined);
   const r=await fetch('/api'+p,o);if(!r.ok)throw new Error(await r.text());return r.json();
 }
-let view=localStorage.view2||'ov', lang='', unread=false, q='', srcFilter=null;
-let nopay=localStorage.nopay==='1', yt=localStorage.yt==='1', group=localStorage.group!=='0', sort=localStorage.sort||'new';
+let view=localStorage.view3||'topics', lang='', unread=false, q='', srcFilter=null;
+let nopay=localStorage.nopay==='1', yt=({'1':'only','only':'only','no':'no'})[localStorage.yt]||'', days=+localStorage.days||3, selTopic=null, group=localStorage.group!=='0', sort=localStorage.sort||'new';
 const ago=ts=>{const d=Date.now()/1000-ts;if(d<3600)return Math.max(1,Math.round(d/60))+' min';if(d<86400)return Math.round(d/3600)+' h';if(d<604800)return Math.round(d/86400)+' d';return new Date(ts*1000).toLocaleDateString()};
 
 const ytBadge=()=>{const b=el('span','yt','▶ YT');b.title='YouTube channel';return b};
@@ -131,10 +144,11 @@ function itemRow(it,showSrc){
 }
 function collapse(w){if(!w)return;w.querySelector('.detail')?.remove();w.querySelector('.item').classList.remove('open');if(openEntry===w)openEntry=null}
 async function render(){
-  const m=$('#main');m.textContent='';openEntry=null;m.classList.toggle('wide',view==='ov');
-  for(const [id,v] of [['#v-ov','ov'],['#v-src','src'],['#v-time','time']])$(id).classList.toggle('on',view===v);
-  if(view==='ov'){
-    const data=await api('/stats?x=1'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':''));
+  const m=$('#main');m.textContent='';openEntry=null;m.classList.toggle('wide',view==='ov'||view==='topics');
+  for(const [id,v] of [['#v-topics','topics'],['#v-ov','ov'],['#v-src','src'],['#v-time','time']])$(id).classList.toggle('on',view===v);
+  if(view==='topics'){await renderTopics(m)}
+  else if(view==='ov'){
+    const data=await api('/stats?x=1'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt='+yt:''));
     const grid=el('div','grid');
     for(const s of data){
       if(q&&!s.name.toLowerCase().includes(q)&&!s.topics.some(t=>t.toLowerCase().includes(q)))continue;
@@ -146,13 +160,13 @@ async function render(){
       c.append(top);
       c.append(el('div','stat',s.error?'⚠ '+s.error:(s.last?'last '+(stale?new Date(s.last*1000).toLocaleDateString():ago(s.last)+' ago'):'no articles yet')+' · '+s.week+' in 7 d'));
       c.append(el('div','topics',s.topics.length?s.topics.join(' · '):'\u00a0'));
-      c.onclick=()=>{srcFilter={id:s.id,name:s.name};view='time';localStorage.view2=view;render()};
+      c.onclick=()=>{srcFilter={id:s.id,name:s.name};view='time';localStorage.view3=view;render()};
       grid.append(c);
     }
     m.append(grid);
     if(!grid.children.length)m.append(el('div','empty','No sources match.'));
   }else if(view==='src'){
-    const data=await api('/overview?per=8'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':''));
+    const data=await api('/overview?per=8'+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt='+yt:''));
     let any=false;
     for(const g of data){
       const items=g.items.filter(i=>!q||i.title.toLowerCase().includes(q)||i.orig.toLowerCase().includes(q));
@@ -184,7 +198,7 @@ async function render(){
     const load=async()=>{
       more.disabled=true;more.textContent='Loading…';
       const bysize=sort==='size';
-      let res=await api('/items?limit='+PAGE+'&offset='+offset+(bysize?'&sort=size':'')+(srcFilter?'&source='+srcFilter.id:'')+(lang?'&lang='+lang:'')+(unread?'&unread=1':'')+(nopay?'&nopay=1':'')+(yt?'&yt=1':'')+(q?'&q='+encodeURIComponent(q):''));
+      let res=await api('/items?limit='+PAGE+'&offset='+offset+(bysize?'&sort=size':'')+(srcFilter?'&source='+srcFilter.id:'')+(lang?'&lang='+lang:'')+(unread?'&unread=1':'')+(nopay?'&nopay=1':'')+(yt?'&yt='+yt:'')+(q?'&q='+encodeURIComponent(q):''));
       const items=bysize?res.items:res;
       more.remove();
       items.forEach(place);
@@ -195,6 +209,81 @@ async function render(){
     };
     more.onclick=load;await load();
   }
+}
+
+// ---- topic map ----
+function pack(items){   // items: [{r}] sorted big→small; greedy placement on an outward spiral, no overlaps
+  const placed=[];
+  for(const it of items){
+    if(!placed.length){it.x=0;it.y=0;placed.push(it);continue}
+    for(let a=0,k=0;;k++){
+      a=k*0.35;const d=3*Math.sqrt(k)*2.2+ (placed[0].r*0.2);
+      const x=Math.cos(a)*d*1.25,y=Math.sin(a)*d;
+      if(placed.every(p=>Math.hypot(p.x-x,p.y-y)>=p.r+it.r+3)){it.x=x;it.y=y;placed.push(it);break}
+    }
+  }
+}
+async function renderTopics(m){
+  const d=await api('/topics?days='+days+(lang?'&lang='+lang:'')+(nopay?'&nopay=1':'')+(yt?'&yt='+yt:''));
+  const bar=el('div','tbar');
+  const ds=el('select');[[1,'Last 24 h'],[3,'Last 3 days'],[7,'Last 7 days']].forEach(([v,t])=>{const o=el('option','',t);o.value=v;ds.append(o)});
+  ds.value=days;ds.onchange=()=>{days=+ds.value;localStorage.days=days;selTopic=null;render()};
+  const clustered=d.topics.reduce((a,t)=>a+t.n,0);
+  bar.append(ds,el('span','',`${d.total} headlines → ${d.topics.length} topics (${Math.round(100*clustered/Math.max(d.total,1))}% belong to a topic; the grey bubble holds the ${d.other.length} one-offs)`));
+  const lg=el('span');lg.append(el('span','sw'),document.createTextNode(' size = headlines · stronger fill = more of it in the last 12 h'));bar.append(lg);
+  m.append(bar);
+  const shown=d.topics.filter(t=>!q||t.items.some(i=>i.title.toLowerCase().includes(q)||i.orig.toLowerCase().includes(q)));
+  if(!shown.length){m.append(el('div','empty','No topics found for this selection.'));return}
+  const nodes=shown.map(t=>({t,r:12+Math.sqrt(t.n)*9.5}));
+  if(d.other.length&&!q){   // one-offs: a grey bubble, drawn smaller than its true size so it does not dominate
+    const bySrc=new Map();d.other.forEach(i=>{if(!bySrc.has(i.source))bySrc.set(i.source,[]);bySrc.get(i.source).push(i.id)});
+    const t={label:'Everything else',n:d.other.length,sources:bySrc.size,fresh:0,items:d.other,other:true,
+      stories:[...bySrc].sort((a,b)=>b[1].length-a[1].length).map(([label,ids])=>({label,ids}))};
+    nodes.push({t,r:Math.min(12+Math.sqrt(t.n)*9.5,.6*Math.max(...nodes.map(n=>n.r)))});
+  }
+  pack(nodes);
+  const x0=Math.min(...nodes.map(n=>n.x-n.r)),x1=Math.max(...nodes.map(n=>n.x+n.r));
+  const y0=Math.min(...nodes.map(n=>n.y-n.r)),y1=Math.max(...nodes.map(n=>n.y+n.r));
+  const NS='http://www.w3.org/2000/svg',se=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e};
+  const svg=se('svg',{id:'map',viewBox:`${x0-4} ${y0-4} ${x1-x0+8} ${y1-y0+8}`});
+  svg.style.maxHeight='74vh';
+  const panel=el('div');
+  const gs=[];
+  for(const n of nodes){
+    const t=n.t,g=se('g',{class:'b'+(t.other?' other':'')+(selTopic===t.label?' sel':'')});
+    const fresh=t.fresh/t.n;
+    g.append(se('circle',{cx:n.x,cy:n.y,r:n.r,'fill-opacity':(.12+.38*fresh).toFixed(2),'stroke-opacity':.8}));
+    const tt=se('title',{});tt.textContent=t.other?`${t.n} headlines that fit no topic`:`${t.label} — ${t.n} headlines, ${t.sources} sources, ${t.fresh} in last 12 h`;g.append(tt);
+    const words=t.other?['Everything','else']:t.label.split(' · ');
+    const lines=words.slice(0,n.r>48?3:2);
+    const room=2*n.r*.82;                       // usable text width inside the circle
+    const longest=Math.max(...lines.map(w=>w.length));
+    const fs=Math.max(8,Math.min(19,n.r/(words.length>1?3.6:3.2),room/(longest*.58)));
+    if(n.r>=26){
+      const maxc=Math.floor(room/(fs*.58));
+      const ls=lines.map(w=>w.length>maxc?w.slice(0,maxc-1)+'…':w);
+      const y=n.y-(ls.length-1)*fs*.55+fs*.15;
+      ls.forEach((w,k)=>{const tx=se('text',{x:n.x,y:y+k*fs*1.1,'font-size':fs});tx.textContent=w;g.append(tx)});
+      const c=se('text',{x:n.x,y:y+ls.length*fs*1.1+fs*.1,'font-size':Math.max(8,fs*.7),class:'c'});c.textContent=t.n;g.append(c);
+    }
+    g.onclick=()=>{selTopic=selTopic===t.label?null:t.label;gs.forEach(([gg,tl])=>gg.classList.toggle('sel',selTopic===tl));showTopic(panel,selTopic?t:null)};
+    gs.push([g,t.label]);svg.append(g);
+  }
+  m.append(svg,panel);
+  const cur=shown.find(t=>t.label===selTopic);if(cur)showTopic(panel,cur);
+}
+function showTopic(panel,t){
+  panel.textContent='';openEntry=null;if(!t)return;
+  const box=el('div','tpanel');panel.append(box);
+  box.append(el('h3','',t.label.split(' · ').join(' · ')));
+  box.append(el('div','sub',`${t.n} headlines from ${t.sources} source${t.sources>1?'s':''} · ${t.stories.length} ${t.other?'source group':'stor'}${t.other?(t.stories.length>1?'s':''):(t.stories.length>1?'ies':'y')}`));
+  const byId=new Map(t.items.map(i=>[i.id,i]));
+  for(const st of t.stories){
+    const its=st.ids.map(i=>byId.get(i)).filter(Boolean).sort((a,b)=>b.published-a.published);
+    if(t.stories.length>1)box.append(el('h4','',st.label+' · '+its.length));
+    its.forEach(i=>box.append(itemRow(i,true)));
+  }
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
 let toastT;
@@ -224,14 +313,15 @@ async function toggle(it,w,row){
 }
 $('#enall').onclick=async()=>{const d=await api('/sources/enable-all',{});render();toast(d.enabled?d.enabled+' source'+(d.enabled>1?'s':'')+' enabled':'All sources were already enabled')};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){collapse(openEntry);$('#settings').classList.remove('open')}});
-$('#yt').classList.toggle('on',yt);
-$('#yt').onclick=e=>{yt=!yt;localStorage.yt=yt?'1':'0';e.target.classList.toggle('on',yt);render()};
+$('#yt').value=yt;
+$('#yt').onchange=e=>{yt=e.target.value;localStorage.yt=yt;selTopic=null;render()};
 $('#nopay').classList.toggle('on',nopay);
 $('#nopay').onclick=e=>{nopay=!nopay;localStorage.nopay=nopay?'1':'0';e.target.classList.toggle('on',nopay);render()};
-$('#v-ov').onclick=()=>{view='ov';localStorage.view2=view;render()};
-$('#v-src').onclick=()=>{view='src';localStorage.view2=view;render()};
-$('#v-time').onclick=()=>{srcFilter=null;view='time';localStorage.view2=view;render()};
-$('#lang').onchange=e=>{lang=e.target.value;render()};
+$('#v-topics').onclick=()=>{view='topics';localStorage.view3=view;render()};
+$('#v-ov').onclick=()=>{view='ov';localStorage.view3=view;render()};
+$('#v-src').onclick=()=>{view='src';localStorage.view3=view;render()};
+$('#v-time').onclick=()=>{srcFilter=null;view='time';localStorage.view3=view;render()};
+$('#lang').onchange=e=>{lang=e.target.value;selTopic=null;render()};
 $('#sort').value=sort;
 $('#sort').onchange=e=>{sort=e.target.value;localStorage.sort=sort;render()};
 $('#group').classList.toggle('on',group);

@@ -142,6 +142,7 @@ def init_db():
                 for i, r in enumerate(csv.DictReader(f, delimiter="\t")):
                     c.execute("INSERT OR IGNORE INTO sources(name,feed,lang,category,note,position) VALUES(?,?,?,?,?,?)",
                               (r["name"], r["feed"], r["lang"], r["category"], r["note"], i))
+    c.execute("DELETE FROM items WHERE url LIKE '%youtube.com/shorts/%'")   # shorts are never shown
     c.commit()
     c.close()
 
@@ -206,6 +207,148 @@ def cluster_items(rows):
     for i in parent:
         groups[find(i)].append(i)
     return {i: min(g) for g in groups.values() if len(g) > 1 for i in g}
+
+
+TOPIC_MIN = 3          # a topic needs at least this many headlines ...
+TOPIC_MIN_SOURCES = 1  # ... from at least this many sources
+TOPIC_EDGE = 0.15      # minimum cosine similarity between two headlines to be linked
+TOPIC_ATTACH = 0.08     # a leftover headline joins a story at least this similar
+TOPIC_MERGE = 0.22      # stories at least this similar are merged into one broader topic
+TOPIC_KNN = 8          # each headline keeps its closest few links
+
+
+def build_topics(rows, baseline=(), max_topics=60):
+    """rows: dicts with id, title, summary, source_id. Groups headlines into topics: TF-IDF vectors (headline words
+    count double, teaser words once; idf is measured over the window plus older `baseline` titles, so everyday
+    vocabulary carries no weight), a nearest-neighbour graph, and label propagation to find its communities.
+    Returns ([{label, ids}], unassigned_ids), biggest topic first."""
+    forms = collections.defaultdict(collections.Counter)
+    tf = {}
+    for r in rows:
+        teaser = BOILERPLATE.sub("", re.sub(r"<[^>]+>", " ", html.unescape(r["summary"] or "")))[:300]
+        ts = {}
+        for weight, text in ((2.0, CLUSTER_TITLE_NOISE.sub("", r["title"] or "")), (1.0, teaser)):
+            for w in WORD_RE.findall(text):
+                k = w.strip("-").casefold()
+                if len(k) >= 4 and k not in STOP:
+                    ts[k[:6]] = max(ts.get(k[:6], 0), weight)
+                    forms[k[:6]][w.strip("-")] += 1
+        tf[r["id"]] = ts
+    df = collections.Counter(t for ts in tf.values() for t in ts)
+    df.update(t for title in baseline for t in story_tokens(title))
+    N = len(rows) + len(baseline)
+    idf = {t: max(0.0, math.log(N / c)) for t, c in df.items()}
+    vec, norm = {}, {}
+    for i, ts in tf.items():
+        v = {t: w * idf[t] for t, w in ts.items() if idf[t] > 1.0}
+        vec[i], norm[i] = v, math.sqrt(sum(x * x for x in v.values())) or 1.0
+    # nearest-neighbour graph through an inverted index; very common words do not create candidate pairs
+    post = collections.defaultdict(list)
+    for i, v in vec.items():
+        for t in v:
+            post[t].append(i)
+    nbrs = {}
+    for i, v in vec.items():
+        dot = collections.defaultdict(float)
+        for t, w in v.items():
+            if len(post[t]) > max(60, len(rows) // 20):
+                continue
+            for j in post[t]:
+                if j != i:
+                    dot[j] += w * vec[j][t]
+        sims = sorted(((d / (norm[i] * norm[j]), j) for j, d in dot.items()), reverse=True)[:TOPIC_KNN]
+        nbrs[i] = [(j, sm) for sm, j in sims if sm >= TOPIC_EDGE]
+    adj = collections.defaultdict(dict)   # symmetric
+    for i, lst in nbrs.items():
+        for j, sm in lst:
+            adj[i][j] = adj[j][i] = sm
+    # label propagation: ties broken by label id so runs are reproducible
+    ids = sorted(vec)
+    label = {i: i for i in ids}
+    for _ in range(12):
+        changed = 0
+        for i in ids:
+            if not adj[i]:
+                continue
+            votes = collections.Counter()
+            for j, sm in adj[i].items():
+                votes[label[j]] += sm
+            best = max(votes.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+            if best != label[i]:
+                label[i] = best
+                changed += 1
+        if not changed:
+            break
+    comm = collections.defaultdict(list)
+    for i in ids:
+        comm[label[i]].append(i)
+    src = {r["id"]: r["source_id"] for r in rows}
+
+    def make_label(members):
+        score = collections.Counter()
+        for i in members:
+            for t, w in tf[i].items():
+                score[t] += w * idf[t]
+        # a good label word is heavy in the topic and appears in several of its headlines
+        cover = collections.Counter(t for i in members for t in tf[i])
+        top = [t for t, _ in score.most_common(12) if cover[t] >= max(2, len(members) * 0.25)][:3]
+        return " · ".join(forms[t].most_common(1)[0][0] for t in top)
+
+    def centroid(members):
+        c = collections.defaultdict(float)
+        for i in members:
+            for t, w in vec[i].items():
+                c[t] += w / norm[i]
+        z = math.sqrt(sum(x * x for x in c.values())) or 1.0
+        return {t: x / z for t, x in c.items()}
+
+    def cos(a, b):
+        if len(a) > len(b):
+            a, b = b, a
+        return sum(x * b[t] for t, x in a.items() if t in b)
+
+    # 1. stories: communities with enough headlines from enough sources
+    stories, rest = [], []
+    for members in sorted(comm.values(), key=len, reverse=True):
+        if len(members) >= TOPIC_MIN and len({src[i] for i in members}) >= TOPIC_MIN_SOURCES and make_label(members):
+            stories.append(members)
+        else:
+            rest += members
+    stories = stories[:150]
+    # 2. leftovers join the story they resemble most
+    cents = [centroid(m) for m in stories]
+    left = []
+    for i in rest:
+        v = {t: w / norm[i] for t, w in vec[i].items()}
+        best = max(((cos(v, c), k) for k, c in enumerate(cents)), default=(0, -1))
+        if best[0] >= TOPIC_ATTACH:
+            stories[best[1]].append(i)
+        else:
+            left.append(i)
+    # 3. related stories merge into broader topics (average-link agglomeration on centroids)
+    groups = [{"ids": list(m), "stories": [list(m)]} for m in stories]
+    for g in groups:
+        g["cent"] = centroid(g["ids"])
+    while len(groups) > 1:
+        best, pair = 0.0, None
+        for x in range(len(groups)):
+            for y in range(x + 1, len(groups)):
+                sm = cos(groups[x]["cent"], groups[y]["cent"])
+                if sm > best:
+                    best, pair = sm, (x, y)
+        if best < TOPIC_MERGE:
+            break
+        x, y = pair
+        gx, gy = groups[x], groups.pop(y)
+        gx["ids"] += gy["ids"]
+        gx["stories"] += gy["stories"]
+        gx["cent"] = centroid(gx["ids"])
+    out = []
+    for g in sorted(groups, key=lambda g: -len(g["ids"]))[:max_topics]:
+        out.append({"label": make_label(g["ids"]), "ids": g["ids"],
+                    "stories": [{"label": make_label(m), "ids": m} for m in sorted(g["stories"], key=len, reverse=True)]})
+    kept = {i for t in out for i in t["ids"]}
+    return out, [i for i in vec if i not in kept]
 
 
 def recluster(c):
@@ -409,6 +552,8 @@ def refresh_all():
             results = list(ex.map(fetch_source, srcs))
         for sid, items, etag, mod, err, site in results:
             for it in items:
+                if is_short(it["url"]):
+                    continue
                 c.execute("""INSERT INTO items(source_id,guid,title,short_title,url,published,summary,content,tags,paywalled)
                              VALUES(?,?,?,?,?,?,?,?,?,?)
                              ON CONFLICT(source_id,guid) DO UPDATE SET tags=excluded.tags, paywalled=excluded.paywalled""",
@@ -453,8 +598,23 @@ def item_json(r):
             "paywalled": bool(r["paywalled"] or r["pmode"])}
 
 
+def is_short(url):
+    return "youtube.com/shorts/" in (url or "")
+
+
 def is_youtube(feed):
     return "youtube.com/feeds/" in (feed or "")
+
+
+def yt_ok(feed, mode):
+    """mode: '' (all), 'only' / '1' (YouTube channels only), 'no' (no YouTube)."""
+    return not mode or (is_youtube(feed) if mode in ("only", "1") else not is_youtube(feed))
+
+
+def yt_sql(mode):
+    if not mode:
+        return None
+    return ("s.feed LIKE '%youtube.com/feeds/%'" if mode in ("only", "1") else "s.feed NOT LIKE '%youtube.com/feeds/%'")
 
 
 ITEM_SQL = """SELECT i.*, s.name AS sname, s.feed AS sfeed, s.paywall_mode AS pmode FROM items i JOIN sources s ON s.id=i.source_id"""
@@ -591,7 +751,7 @@ class H(BaseHTTPRequestHandler):
                 flt = " AND NOT muted(i.title, i.tags)" + (" AND " + NOPAY_SQL if q.get("nopay") else "")
                 out = []
                 for s in c.execute("SELECT * FROM sources WHERE enabled=1 ORDER BY position, id").fetchall():
-                    if q.get("lang") and s["lang"] != q["lang"] or q.get("yt") and not is_youtube(s["feed"]):
+                    if q.get("lang") and s["lang"] != q["lang"] or not yt_ok(s["feed"], q.get("yt")):
                         continue
                     base = "FROM items i JOIN sources s ON s.id=i.source_id WHERE i.source_id=?" + flt
                     last = c.execute("SELECT MAX(i.published) " + base, (s["id"],)).fetchone()[0]
@@ -601,12 +761,37 @@ class H(BaseHTTPRequestHandler):
                                 "topics": topics(rows, s["name"]) if rows else [], "error": s["last_error"],
                                 "paywall": bool(s["paywall_mode"]), "youtube": is_youtube(s["feed"])})
                 return self.send(out)
+            if method == "GET" and p == "/api/topics":
+                days = min(max(int(q.get("days", 3)), 1), 30)
+                where = ["s.enabled=1", "NOT muted(i.title, i.tags)", f"i.published>={int(time.time()) - days * 86400}"]
+                if q.get("lang"):
+                    where.append("s.lang=?")
+                if q.get("nopay"):
+                    where.append(NOPAY_SQL)
+                if yt_sql(q.get("yt")):
+                    where.append(yt_sql(q.get("yt")))
+                rows = c.execute(f"{ITEM_SQL} WHERE {' AND '.join(where)} ORDER BY i.published DESC",
+                                 [q["lang"]] if q.get("lang") else []).fetchall()
+                by_id = {r["id"]: r for r in rows}
+                base = [r[0] for r in c.execute(
+                    "SELECT i.title FROM items i JOIN sources s ON s.id=i.source_id WHERE s.enabled=1 AND i.published<? AND i.published>=?",
+                    (int(time.time()) - days * 86400, int(time.time()) - 60 * 86400))]
+                tps, rest = build_topics([dict(r) for r in rows], base)
+                now = time.time()
+                out = [{"label": t["label"], "n": len(t["ids"]),
+                        "sources": len({by_id[i]["source_id"] for i in t["ids"]}),
+                        "fresh": sum(1 for i in t["ids"] if now - by_id[i]["published"] < 12 * 3600),
+                        "unread": sum(1 for i in t["ids"] if not by_id[i]["read"]),
+                        "items": [item_json(by_id[i]) for i in t["ids"]],
+                        "stories": [{"label": st["label"], "ids": st["ids"]} for st in t["stories"]]} for t in tps]
+                return self.send({"total": len(rows), "days": days, "topics": out,
+                                  "other": [item_json(by_id[i]) for i in rest]})
             if method == "GET" and p == "/api/overview":
                 per = min(int(q.get("per", 8)), 50)
                 srcs = c.execute("SELECT * FROM sources WHERE enabled=1 ORDER BY position, id").fetchall()
                 out = []
                 for s in srcs:
-                    if q.get("lang") and s["lang"] != q["lang"] or q.get("yt") and not is_youtube(s["feed"]):
+                    if q.get("lang") and s["lang"] != q["lang"] or not yt_ok(s["feed"], q.get("yt")):
                         continue
                     rows = c.execute(ITEM_SQL + " WHERE i.source_id=? AND NOT muted(i.title, i.tags)"
                                         + (" AND " + NOPAY_SQL if q.get("nopay") else "")
@@ -626,8 +811,8 @@ class H(BaseHTTPRequestHandler):
                     where.append("i.read=0")
                 if q.get("nopay"):
                     where.append(NOPAY_SQL)
-                if q.get("yt"):
-                    where.append("s.feed LIKE '%youtube.com/feeds/%'")
+                if yt_sql(q.get("yt")):
+                    where.append(yt_sql(q.get("yt")))
                 if q.get("q"):
                     where.append("(i.title LIKE ? OR i.short_title LIKE ? OR i.tags LIKE ?)"); args += [f"%{q['q']}%"] * 3
                 if q.get("sort") == "size":

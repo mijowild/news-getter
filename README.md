@@ -6,10 +6,6 @@ Most news comes through feeds ranked by someone else's idea of what should hold 
 
 It runs on your own machine, reads the RSS/Atom feeds of independent outlets and blogs (German and English), and stores everything in a single local SQLite file. When several outlets report the same story, it folds them into one row, so a day of news is a list of stories, not 40 copies of the same headline.
 
-Note: Youtube's feed per channel can be added as well. Just add:
-```https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxxxxxxxxxxxxxxxxxxxx```
-Find the channel ID: on the channel page, open the description or "About" and look for "Share channel" --> "Copy channel ID". 
-
 Python 3 standard library only. No dependencies, no build step, one HTML file for the front end.
 
 ## Run
@@ -25,8 +21,9 @@ Set your feeds to your taste in the **Sources** screen, or import an OPML or you
 
 ## What you get
 
-### Three ways to look at the news
-- **Overview** (default): one card per source, in your order, with when it last published, how many articles came in over 7 days, and up to three recurring topics. Quiet sources are dimmed and failing feeds are outlined. Click a card to see that source's articles.
+### Four ways to look at the news
+- **Topics** (default): a bubble map of what the news is about, clustered from the last 1 / 3 / 7 days. See [Topic map](#topic-map).
+- **Overview**: one card per source, in your order, with when it last published, how many articles came in over 7 days, and up to three recurring topics. Quiet sources are dimmed and failing feeds are outlined. Click a card to see that source's articles.
 - **By source**: your sources in your order, each with its latest 8 headlines.
 - **Timeline**: everything merged by date. Two switches change how it reads:
   - **Group stories** folds headlines about the same story into one row: the newest headline plus a "+N more · M sources" pill that unfolds the rest.
@@ -48,9 +45,36 @@ Set your feeds to your taste in the **Sources** screen, or import an OPML or you
 
 ## Following YouTube channels
 
-Every YouTube channel has an RSS/Atom feed: `https://www.youtube.com/feeds/videos.xml?channel_id=<ID>` (the ID starts with `UC`; playlists work with `playlist_id=`). Paste it into Sources → Add. Titles, dates and descriptions come through; thumbnails are not loaded.
+Every YouTube channel has an RSS/Atom feed: `https://www.youtube.com/feeds/videos.xml?channel_id=<ID>` (the ID starts with `UC`; playlists work with `playlist_id=`). Paste it into Sources → Add. Titles, dates and descriptions come through; thumbnails are not loaded. YouTube Shorts (links containing `/shorts/`) are skipped on fetch and never stored. The source filter in the top bar switches between **All sources**, **No YouTube** and **YouTube only** (API: `yt=no` / `yt=only`, accepted by `/stats`, `/overview`, `/items` and `/topics`); it applies to every view, including the topic map.
 
 To import all your subscriptions at once, export them from [Google Takeout](https://takeout.google.com) (YouTube and YouTube Music → only *subscriptions*), unzip, and import `subscriptions.csv` in Sources → Import. Channels land in the category "YouTube". Channels that have been deleted show a 404 in the Sources list; remove them with ✕.
+
+## Topic map
+
+The **Topics** view (the default) shows at one glance what the news is about. It takes the headlines of the last 24 h / 3 days / 7 days and draws each topic as a bubble.
+
+- **Size** is the number of headlines in the topic; a **stronger fill** means more of it appeared in the last 12 hours.
+- **Click a bubble** to read its headlines underneath, grouped by sub-story ("midterm · Trump · Democrats" unfolds into the individual stories about it). Articles open in place, like everywhere else.
+- **The grey dashed bubble, "Everything else"**, holds the headlines that fit no topic (typically around half: single product tests, one-off blog posts). Click it to browse them grouped by source. It is drawn smaller than its true size so it does not dominate; the exact count is on the bubble.
+- The **language, paywall and YouTube filters** and the **search box** apply here too (search dims the map down to topics with matching headlines and hides the grey bubble).
+
+### How the clustering works
+
+Implemented in `build_topics` in `server.py`, served by `GET /api/topics`. Standard library only, no external services; it runs on every request and takes about a second for 3,000 headlines.
+
+1. **Vectors.** Each headline becomes a TF-IDF vector over its words (stemmed to 6 letters; headline words count double, teaser words once). The idf is measured over the window *plus the previous 60 days of headlines*, so everyday vocabulary ("Jahren", "heute") carries no weight, while words that suddenly appear a lot do.
+2. **Graph.** Every headline is linked to its closest few neighbours by cosine similarity.
+3. **Stories.** Label propagation finds communities in that graph: a group of headlines about the same event. A story needs at least 3 headlines.
+4. **Leftovers.** A headline outside every story joins the story it resembles most, if it resembles one at all.
+5. **Topics.** Related stories are merged (average-link on their centroids) into broader topics. Stories are kept as the drill-down level.
+6. **Labels.** A topic is named by its three heaviest words that recur across its headlines.
+
+Tunables are the `TOPIC_*` constants at the top of that section: `TOPIC_MERGE` and `TOPIC_ATTACH` (lower = fewer, broader topics and a smaller grey bubble, at the cost of vaguer groups), `TOPIC_EDGE` (how similar two headlines must be to be linked) and `TOPIC_MIN` (smallest story).
+
+Limits:
+- German and English coverage of the same event is **not** merged (there is no translation), so you get e.g. "Bombendrohungen · Europa" and "bomb · threats · Europe" as two bubbles.
+- Recurring series (daily news summaries, live-music streams, puzzles) show up as topics of their own.
+- Clustering is by shared vocabulary, not meaning: a topic can occasionally contain a loosely related headline.
 
 ## How story grouping works
 
@@ -84,6 +108,7 @@ The trade-offs: it won't join German and English versions of a story unless a na
 
 | Route | Purpose |
 |---|---|
+| `GET /topics?days=3&lang=&nopay=1&yt=` | Topic clusters: `{total, topics[{label, n, sources, fresh, unread, items, stories}], other}` |
 | `GET /stats?lang=&nopay=1` | Per-source overview: last article, 7-day count, topics |
 | `GET /overview?per=8&lang=&nopay=1` | Sources in order with their latest items |
 | `GET /items?limit=&offset=&lang=&unread=1&nopay=1&q=&source=` | Timeline items, newest first, each with its `cluster` id |
