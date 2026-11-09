@@ -769,6 +769,51 @@ class H(BaseHTTPRequestHandler):
                 c.commit()
                 threading.Thread(target=refresh_all, args=(profile,), daemon=True).start()
                 return self.send({"ok": True})
+            if method == "POST" and p == "/api/sources/bulk":
+                b = self.json_body()
+                ids = [int(i) for i in b.get("ids", [])]
+                action, target = b.get("action"), b.get("to")
+                if action not in ("delete", "move", "copy") or not ids:
+                    return self.send({"error": "Nothing to do."}, 400)
+                if action != "delete" and (target == profile or target not in list_profiles()):
+                    return self.send({"error": "Pick another profile as the target."}, 400)
+                done = skipped = 0
+                if action != "delete":
+                    tc = db(target)
+                    try:
+                        tpos = tc.execute("SELECT COALESCE(MAX(position),-1)+1 FROM sources").fetchone()[0]
+                        for sid in ids:
+                            s = c.execute("SELECT * FROM sources WHERE id=?", (sid,)).fetchone()
+                            if not s:
+                                continue
+                            cur = tc.execute("""INSERT OR IGNORE INTO sources(name,feed,lang,category,note,position,enabled,
+                                                paywall_mode,site) VALUES(?,?,?,?,?,?,?,?,?)""",
+                                             (s["name"], s["feed"], s["lang"], s["category"], s["note"], tpos + done,
+                                              s["enabled"], s["paywall_mode"], s["site"]))
+                            if not cur.rowcount:
+                                skipped += 1   # that feed is already in the target profile
+                                continue
+                            done += 1
+                            for it in c.execute("SELECT * FROM items WHERE source_id=?", (sid,)):   # articles and read state travel along
+                                tc.execute("""INSERT OR IGNORE INTO items(source_id,guid,title,short_title,url,published,summary,
+                                              content,tags,paywalled,read) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                                           (cur.lastrowid, it["guid"], it["title"], it["short_title"], it["url"], it["published"],
+                                            it["summary"], it["content"], it["tags"], it["paywalled"], it["read"]))
+                        tc.commit()
+                        recluster(tc)
+                    finally:
+                        tc.close()
+                else:
+                    done = len(ids)
+                if action in ("delete", "move"):
+                    for sid in ids:
+                        c.execute("DELETE FROM items WHERE source_id=?", (sid,))
+                        c.execute("DELETE FROM sources WHERE id=?", (sid,))
+                    c.commit()
+                    recluster(c)
+                if action != "delete":
+                    threading.Thread(target=refresh_all, args=(target,), daemon=True).start()
+                return self.send({"done": done, "skipped": skipped})
             if method == "POST" and p == "/api/sources/enable-all":
                 n = c.execute("UPDATE sources SET enabled=1 WHERE enabled=0").rowcount
                 c.commit()

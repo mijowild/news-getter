@@ -25,6 +25,7 @@ A profile is a separate database with its own sources, articles, muted words, re
 
 - Pick the active profile in the dropdown at the top left (it appears once you have more than one). Everything on screen belongs to that profile. The choice and the last view per profile are remembered; a specialised profile opens on the Timeline, the world profile on Topics.
 - **Sources screen:** it has its own "of profile" selector at the top. Choose a profile there and the source list, order, muted words, import and export all switch to it, so you add, enable, reorder and delete sources for that profile only.
+- **Bulk actions:** tick the first checkbox of any rows in the Sources list (or use **Mark all** / **Mark none**), then **Remove marked** deletes those sources and their articles from this profile, and **Move** / **Copy** send them, with their articles and read state, to another profile. A feed that is already in the target is skipped and reported.
 - **Create** one under Sources → Profiles: give it a name and optionally an OPML file of sources. If a file `sources-<name>.opml` sits next to `server.py` (like e.g. `sources-physics.opml`), a profile of that name is seeded from it automatically. **Delete** the selected profile with the Delete profile button at the top of the Sources screen.
 - `/?profile=physics` opens a profile directly, and `/?profile=physics#sources` opens its Sources screen, so you can bookmark them.
 - Your existing data is the profile **World** (`news.db`); nothing to migrate. Other profiles live in `news-<name>.db`.
